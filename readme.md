@@ -5,5 +5,5 @@ For the training of the simformer we have to first turn our data into noise and 
 Turning data step-by-step into noise: <br>
 
 <p align="center">
-  <img src="simformer/plots/theta_to_noise.gif" />
+  <img src="plots/theta_to_noise.gif" />
 </p>
