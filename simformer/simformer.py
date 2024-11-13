@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import Transformer
 
 import numpy as np
 
@@ -90,16 +91,17 @@ class Simformer(nn.Module):
         self.alphas = 1. - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, axis=0) # Cumulative product of alphas at each timestep
 
-        self.sde_type = sde_type
-
-        self.time_embedding = GaussianFourierEmbedding(64)
-
+        # initialize SDE
         if sde_type == "vesde":
             self.sde = VESDE()
         elif sde_type == "vpsde":
             self.sde = VPSDE()
         else:
             raise ValueError("Invalid SDE type")
+        
+        # initialize transformer model
+        self.time_embedding = GaussianFourierEmbedding(64)
+        self.model = Transformer(d_model=10, nhead=2, num_encoder_layers=2, num_decoder_layers=2)
 
     def linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
         return torch.linspace(start, end, timesteps)
@@ -111,3 +113,10 @@ class Simformer(nn.Module):
         """
         x_1 = self.sde.diffusion(x_0, t)
         return x_1
+    
+    def forward(self, data, timestep):
+        data_encoded = self.time_embedding(data)
+        x = self.model(data_encoded, )
+        return x
+    
+

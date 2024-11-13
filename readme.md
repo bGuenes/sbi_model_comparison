@@ -42,3 +42,6 @@ s_{\theta}(\mathbf{x},t) \approx \nabla_\mathbf{x} \log p_t(\mathbf{x})
 $$
 
 with a neural network. In this case, we use a transformer architecture to approximate the score function. <br>
+
+### Time-Dependent Score-Based Function
+In theory there are no limitations on the model used to approximate the score function. However, as proposed in the [All-in-one Simualtion Based Inference](https://arxiv.org/abs/2404.09636) paper, we use a transformer architecture as they  overcome limitations of feed-forward networks in effectively dealing with sequential inputs.
