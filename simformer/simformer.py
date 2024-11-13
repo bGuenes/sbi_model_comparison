@@ -106,7 +106,7 @@ class Simformer(nn.Module):
 
     def forward_diffusion_sample(self, x_0, t, device="cpu"):
         """ 
-        Takes an image and a timestep as input and 
+        Takes data and a timestep as input and 
         returns the noisy version of it
         """
         x_1 = self.sde.diffusion(x_0, t)
