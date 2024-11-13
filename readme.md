@@ -14,10 +14,9 @@ where $\mathbf{f}(\cdot, t): \mathbb{R}^d \to \mathbb{R}^d$ is called the *drift
 
 Step-by-step diffusion process with Variance Exploding SDE (VESDE): <br>
 
-<div style="display: flex; justify-content: space-between;">
-  <img src="plots/theta_to_noise.gif" style="width: 48%;"/>
-  <img src="plots/x_to_noise.gif" style="width: 48%;"/>
-</div>
+Galactic Parameters           |  Chemical Abundances
+:-------------------------:|:-------------------------:
+![](plots/theta_to_noise.gif)  |  ![](plots/x_to_noise.gif)
 
 ### Reversing the Diffusion Process
 Reversing the diffusion process is running the diffusion process backwards in time. 
