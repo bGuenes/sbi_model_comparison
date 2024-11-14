@@ -84,7 +84,7 @@ class VESDE(BaseSDE):
 # --------------------------------------------------------------------------------------------------
 
 class Simformer(nn.Module):
-    def __init__(self, timesteps, sde_type="vesde"):
+    def __init__(self, timesteps, sde_type="vesde", nodes_max=100, dim_value=20, dim_id=20, dim_condition=10):
         super(Simformer, self).__init__()
 
         self.betas = self.linear_beta_schedule(timesteps=timesteps)
@@ -98,25 +98,54 @@ class Simformer(nn.Module):
             self.sde = VPSDE()
         else:
             raise ValueError("Invalid SDE type")
-        
-        # initialize transformer model
+
+        # Gaussian Fourier Embedding for time embedding
         self.time_embedding = GaussianFourierEmbedding(64)
-        self.model = Transformer(d_model=10, nhead=2, num_encoder_layers=2, num_decoder_layers=2)
+
+        # Token embedding layers for values, node IDs, and condition masks
+        self.embedding_net_value = nn.Linear(1, dim_value)  # Assuming scalar values, map to `dim_value`
+        self.embedding_net_id = nn.Embedding(nodes_max, dim_id)  # Embedding for node IDs
+        self.condition_embedding = nn.Parameter(torch.randn(1, 1, dim_condition) * 0.5)  # Learnable condition embedding
+
+        # Transformer model
+        self.transformer = Transformer(d_model=dim_value + dim_id + dim_condition, nhead=2, num_encoder_layers=2, num_decoder_layers=2)
+
+        # Output linear layer
+        self.output_layer = nn.Linear(dim_value + dim_id + dim_condition, 1)
+
 
     def linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
         return torch.linspace(start, end, timesteps)
 
     def forward_diffusion_sample(self, x_0, t, device="cpu"):
-        """ 
-        Takes data and a timestep as input and 
-        returns the noisy version of it
-        """
+        # Diffusion process for time t with defined SDE
         x_1 = self.sde.diffusion(x_0, t)
         return x_1
     
-    def forward(self, data, timestep):
-        data_encoded = self.time_embedding(data)
-        x = self.model(data_encoded, )
-        return x
+    def forward(self, x, timestep, node_ids, condition_mask, edge_mask=None):
+        batch_size, seq_len, _ = x.shape
+
+        # Time embedding
+        time_embedded = self.time_embedding(timestep).unsqueeze(1).expand(-1, seq_len, -1)
+
+        # Value, ID, and condition embeddings
+        value_embeddings = self.embedding_net_value(x)
+        id_embeddings = self.embedding_net_id(node_ids)
+        
+        # Condition embedding, scaled by condition mask
+        condition_embedding = self.condition_embedding * condition_mask.unsqueeze(-1).float()
+        condition_embedding = condition_embedding.expand(batch_size, seq_len, -1)
+        
+        # Concatenate all embeddings to create the input for the Transformer
+        x_encoded = torch.cat([value_embeddings, id_embeddings, condition_embedding], dim=-1)
+
+        # Transformer forward pass
+        x_encoded = x_encoded.permute(1, 0, 2)  # Transformer expects (seq_len, batch_size, d_model)
+        transformer_output = self.transformer(x_encoded, x_encoded, src_key_padding_mask=edge_mask)
+        transformer_output = transformer_output.permute(1, 0, 2)  # Reorder back to (batch_size, seq_len, d_model)
+
+        # Score estimate output layer
+        out = self.output_layer(transformer_output)
+        return out
     
 
