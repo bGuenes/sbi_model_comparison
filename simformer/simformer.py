@@ -50,10 +50,6 @@ class BaseSDE():
     def diffusion(self, x, t):
         eps = torch.randn_like(x)
         return x + self.drift(t) + self.diff(t) * eps
-
-    def marginal_stddev(self, t):
-        # Marginal standard deviation is the square root of marginal variance
-        return torch.sqrt(self.marginal_variance(t))
     
 
 class VPSDE(BaseSDE):
@@ -69,10 +65,26 @@ class VPSDE(BaseSDE):
 
         super().__init__(drift, diff)
 
-    def marginal_variance(self, t):
-        # Using the formula for variance in VPSDE with constant beta
-        # Variance for VP SDE: sigma^2 (1 - exp(-integral(beta(s))))
-        return 1.0 - torch.exp(-self.betas(t) * t)
+    def marginal_prob_std(self, t):
+        """
+        Compute the standard deviation of p_{0t}(x(t) | x(0)) for VPSDE.
+        Args:
+            t: A tensor or array of time steps (assumed in the range [0, 1]).
+        Returns:
+            The standard deviation for each time step.
+        """
+        # Scale t to match the length of betas
+        t_index = (t * (len(self.betas) - 1)).long()
+        
+        # Compute cumulative product of (1 - beta) up to each time index
+        alphas = 1.0 - self.betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        
+        # Select the cumulative product for each time step `t`
+        alpha_prod_t = alphas_cumprod[t_index]
+        
+        # Return the marginal standard deviation at time `t`
+        return torch.sqrt(1.0 - alpha_prod_t)
 
 
 class VESDE(BaseSDE):
@@ -93,14 +105,25 @@ class VESDE(BaseSDE):
 
         super().__init__(drift, diff)
 
-    def marginal_variance(self, t):
-        # For VE SDE, the variance grows with t^2 * sigma^2
-        return (self.sigma_min * (self.sigma_max / self.sigma_min) ** t) ** 2
+    def marginal_prob_std(self, t):
+        """
+        Compute the standard deviation of p_{0t}(x(t) | x(0)) for VESDE.
+        Args:
+            t: A tensor or array of time steps.
+        Returns:
+            The standard deviation.
+        """
+        return torch.sqrt((self.sigma_max ** (2 * t) - 1.0) / (2 * np.log(self.sigma_max)))
+
 
 
 # --------------------------------------------------------------------------------------------------
 
 class Simformer(nn.Module):
+    # ------------------------------------
+    # /////////// Initialization ///////////
+    # Initialize the Simformer model
+
     def __init__(self, timesteps, data_shape, sde_type="vesde", dim_value=20, dim_id=20, dim_condition=10, dim_time=64):
         super(Simformer, self).__init__()
 
@@ -132,6 +155,8 @@ class Simformer(nn.Module):
         # Output linear layer
         self.output_layer = nn.Linear(dim_value + dim_id + dim_condition + dim_time, 1)
 
+    # ------------------------------------
+    # /////////// Helper functions ///////////
 
     def linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
         return torch.linspace(start, end, timesteps)
@@ -142,11 +167,13 @@ class Simformer(nn.Module):
         return x_1
     
     def output_scale_function(self, t, x):
-        scale = torch.clamp(self.sde.marginal_stddev(t), min=1e-2)
+        t = t.reshape(-1, 1, 1)
+        scale = torch.clamp(self.sde.marginal_prob_std(t), min=1e-2)
         return (x/scale).reshape(x.shape)
     
     # ------------------------------------
-    # /////////// Forward pass ///////////    
+    # /////////// Forward pass ///////////
+    # Predict the score for the given input data 
 
     def forward(self, x, timestep, condition_mask, edge_mask=None):
 
@@ -180,9 +207,9 @@ class Simformer(nn.Module):
         # --- Output decoding ---
         # Score estimate output layer
         out = self.output_layer(transformer_output)
-        out = self.output_scale_function(timestep, out)
+        score = self.output_scale_function(timestep, out)
 
-        return out
+        return score
     
     # ------------------------------------
 
