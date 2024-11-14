@@ -11,27 +11,28 @@ class GaussianFourierEmbedding(nn.Module):
     """Gaussian Fourier embedding module. Mostly used to embed time.
 
     Args:
-        output_dim (int, optional): Output dimesion. Defaults to 128.
+        embed_dim (int, optional): Output dimesion. Defaults to 128.
     """
     def __init__(self, embed_dim, scale=30.):
         super().__init__()
-        # Randomly sample weights during initialization. These weights are fixed 
-        # during optimization and are not trainable.
-        self.W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)
+        self.embed_dim = embed_dim
 
     def forward(self, x):
-        x_proj = x[:, None] * self.W[None, :] * 2 * np.pi
-        term1 = torch.sin(x_proj)
-        term2 = torch.cos(x_proj)
+        half_dim = self.embed_dim // 2 + 1
+        B = torch.randn(half_dim, x.shape[-1])
+        x = 2 * np.pi * torch.matmul(x, B.T)
+        term1 = torch.cos(x)
+        term2 = torch.sin(x)
         out = torch.cat([term1, term2], dim=-1)
-        return out
+        return out[..., : self.embed_dim]
 
 
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
 
 class BaseSDE():
-      """A base class for SDEs. We assume that the SDE is of the form:
+    """
+    A base class for SDEs. We assume that the SDE is of the form:
 
     dX_t = f(t, X_t)dt + g(t, X_t)dW_t
 
@@ -42,17 +43,21 @@ class BaseSDE():
         diffusion (Callable): Diffusion function
         p0 (Distribution): Initial distribution
     """
-      def __init__(self, drift, diff):
-          self.drift = drift
-          self.diff = diff
+    def __init__(self, drift, diff):
+        self.drift = drift
+        self.diff = diff
       
-      def diffusion(self, x, t):
+    def diffusion(self, x, t):
         eps = torch.randn_like(x)
         return x + self.drift(t) + self.diff(t) * eps
 
+    def marginal_stddev(self, t):
+        # Marginal standard deviation is the square root of marginal variance
+        return torch.sqrt(self.marginal_variance(t))
+    
 
 class VPSDE(BaseSDE):
-    def __init__(self, beta_min=0.01, beta_max=10.0):
+    def __init__(self):
         """
         Variance Preserving Stochastic Differential Equation (VPSDE) class.
         The VPSDE is defined as:
@@ -64,6 +69,11 @@ class VPSDE(BaseSDE):
 
         super().__init__(drift, diff)
 
+    def marginal_variance(self, t):
+        # Using the formula for variance in VPSDE with constant beta
+        # Variance for VP SDE: sigma^2 (1 - exp(-integral(beta(s))))
+        return 1.0 - torch.exp(-self.betas(t) * t)
+
 
 class VESDE(BaseSDE):
     def __init__(self, sigma_min=0.0001, sigma_max=15.0):
@@ -73,18 +83,25 @@ class VESDE(BaseSDE):
             Drift     -> f(x,t) = 0
             Diffusion -> g(t)   = sigma^t
         """
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+
         drift = lambda t: torch.zeros(1)
         
-        _const = torch.sqrt(2 * torch.log(torch.tensor([sigma_max / sigma_min])))
-        diff = lambda t: sigma_min * (sigma_max / sigma_min) ** t * _const
+        _const = torch.sqrt(2 * torch.log(torch.tensor([self.sigma_max / self.sigma_min])))
+        diff = lambda t: self.sigma_min * (self.sigma_max / self.sigma_min) ** t * _const
 
         super().__init__(drift, diff)
+
+    def marginal_variance(self, t):
+        # For VE SDE, the variance grows with t^2 * sigma^2
+        return (self.sigma_min * (self.sigma_max / self.sigma_min) ** t) ** 2
 
 
 # --------------------------------------------------------------------------------------------------
 
 class Simformer(nn.Module):
-    def __init__(self, timesteps, sde_type="vesde", nodes_max=100, dim_value=20, dim_id=20, dim_condition=10):
+    def __init__(self, timesteps, data_shape, sde_type="vesde", dim_value=20, dim_id=20, dim_condition=10, dim_time=64):
         super(Simformer, self).__init__()
 
         self.betas = self.linear_beta_schedule(timesteps=timesteps)
@@ -100,18 +117,20 @@ class Simformer(nn.Module):
             raise ValueError("Invalid SDE type")
 
         # Gaussian Fourier Embedding for time embedding
-        self.time_embedding = GaussianFourierEmbedding(64)
+        self.time_embedding = GaussianFourierEmbedding(dim_time)
 
         # Token embedding layers for values, node IDs, and condition masks
-        self.embedding_net_value = nn.Linear(1, dim_value)  # Assuming scalar values, map to `dim_value`
-        self.embedding_net_id = nn.Embedding(nodes_max, dim_id)  # Embedding for node IDs
+        self.nodes_max = data_shape[1]  # Maximum number of nodes
+        self.node_ids = torch.arange(self.nodes_max)  # Node IDs
+        self.embedding_net_value = lambda x: np.repeat(x, dim_value, axis=-1)  # Value embedding net (here we just repeat the value)
+        self.embedding_net_id = nn.Embedding(self.nodes_max, dim_id)  # Embedding for node IDs
         self.condition_embedding = nn.Parameter(torch.randn(1, 1, dim_condition) * 0.5)  # Learnable condition embedding
 
         # Transformer model
-        self.transformer = Transformer(d_model=dim_value + dim_id + dim_condition, nhead=2, num_encoder_layers=2, num_decoder_layers=2)
+        self.transformer = Transformer(d_model=dim_value + dim_id + dim_condition + dim_time, nhead=2, num_encoder_layers=2, num_decoder_layers=2)
 
         # Output linear layer
-        self.output_layer = nn.Linear(dim_value + dim_id + dim_condition, 1)
+        self.output_layer = nn.Linear(dim_value + dim_id + dim_condition + dim_time, 1)
 
 
     def linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
@@ -122,30 +141,50 @@ class Simformer(nn.Module):
         x_1 = self.sde.diffusion(x_0, t)
         return x_1
     
-    def forward(self, x, timestep, node_ids, condition_mask, edge_mask=None):
-        batch_size, seq_len, _ = x.shape
+    def output_scale_function(self, t, x):
+        scale = torch.clamp(self.sde.marginal_stddev(t), min=1e-2)
+        return (x/scale).reshape(x.shape)
+    
+    # ------------------------------------
+    # /////////// Forward pass ///////////    
 
+    def forward(self, x, timestep, condition_mask, edge_mask=None):
+
+        # --- Reshape input ---
+        # shaping data in the form of (batch_size, sequence_length, values)
+        batch_size, seq_len = x.shape
+        x = x.reshape(batch_size, seq_len, 1)
+        condition_mask = condition_mask.reshape(x.shape)
+        batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0))
+
+        # --- Embedding ---
         # Time embedding
         time_embedded = self.time_embedding(timestep).unsqueeze(1).expand(-1, seq_len, -1)
-
-        # Value, ID, and condition embeddings
-        value_embeddings = self.embedding_net_value(x)
-        id_embeddings = self.embedding_net_id(node_ids)
+        # Value embedding
+        value_embedded = self.embedding_net_value(x)
+        # Node ID embedding
+        id_embedded = self.embedding_net_id(batch_node_ids)
+        # Condition embedding
+        condition_embedded = self.condition_embedding * condition_mask
         
-        # Condition embedding, scaled by condition mask
-        condition_embedding = self.condition_embedding * condition_mask.unsqueeze(-1).float()
-        condition_embedding = condition_embedding.expand(batch_size, seq_len, -1)
-        
+        # --- Create Token ---
         # Concatenate all embeddings to create the input for the Transformer
-        x_encoded = torch.cat([value_embeddings, id_embeddings, condition_embedding], dim=-1)
-
-        # Transformer forward pass
+        x_encoded = torch.cat([value_embedded, id_embedded, condition_embedded, time_embedded], dim=-1)
         x_encoded = x_encoded.permute(1, 0, 2)  # Transformer expects (seq_len, batch_size, d_model)
+
+        # --- Transformer ---
+        # Transformer forward pass
         transformer_output = self.transformer(x_encoded, x_encoded, src_key_padding_mask=edge_mask)
         transformer_output = transformer_output.permute(1, 0, 2)  # Reorder back to (batch_size, seq_len, d_model)
 
+        # --- Output decoding ---
         # Score estimate output layer
         out = self.output_layer(transformer_output)
+        out = self.output_scale_function(timestep, out)
+
         return out
+    
+    # ------------------------------------
+
     
 
