@@ -2,6 +2,8 @@
 
 We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [transformer](https://arxiv.org/abs/1706.03762) architecture ([simformer](https://arxiv.org/abs/2404.09636)) to do SBI for [model comparison](https://academic.oup.com/rasti/article/2/1/710/7382245). <br>
 
+## Diffusion Model
+
 ### Perturbing Data with a Diffusion Process
 For the training of the simformer we have to first turn our data into noise and then train the simformer to denoise it for every timestep. <br>
 The diffusion process is defined by the following equation:
@@ -44,4 +46,21 @@ $$
 with a neural network. In this case, we use a transformer architecture to approximate the score function. <br>
 
 ### Time-Dependent Score-Based Function
-In theory there are no limitations on the model used to approximate the score function. However, as proposed in the [All-in-one Simualtion Based Inference](https://arxiv.org/abs/2404.09636) paper, we use a transformer architecture as they  overcome limitations of feed-forward networks in effectively dealing with sequential inputs.
+In theory there are no limitations on the model used to approximate the score function. However, as proposed in the [All-in-one Simualtion Based Inference](https://arxiv.org/abs/2404.09636) paper, we use a transformer architecture as they  overcome limitations of feed-forward networks in effectively dealing with sequential inputs. <br>
+
+The transformer takes tokens as inputs and processes them in parallel. The transformer consists of an encoder and a decoder. The encoder processes the input tokens and the decoder processes the output tokens. The transformer uses self-attention to weigh the importance of each token in the input sequence. <br>
+
+Our tokens are the data values $\mathbf{x}$, the embedded nodes, condtion mask and the time $t$. 
+
+|| Node ID | Values | Condition Mask | Time |
+|-------------------------|:-------------------------:| :-------------------------:| :-------------------------:|:-------------------------:|
+||Unique ID for every Value | Joint data $\hat{x}$ | Binary Conndition indicating observed or latent | Time in diffusion process|
+| Shape | `(batch_size, sequence_length)` | `(batch_size, sequence_length, 1)` | `(batch_size, sequence_length, 1)` | `(batch_size, 1)` |
+| Example | $[0, 1, 2]$ # sequence 1 <br> $[0, 1, 2]$ # sequence 2 <br> $[0, 1, 2]$ # sequence 3 |  $[[0.1], [0.2], [0.3]] \\ [[1.1], [1.2], [1.3]] \\ [[2.1], [2.2], [2.3]]$ | $[[0], [0], [1]] \\ [[0], [1], [1]] \\ [[1], [0], [1]]$ | [10]<br>[25]<br>[99] |
+| Embedding | Nodes are embedded over `dim_id = 20` with [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Values are repeated across `dim_values = 20` | Condition mask is embedded over `dim_condition = 10` learnable parameters | Time is embedded over `dim_time = 20` with [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
+
+The tokens are passed through the [`nn.Transformer()`](https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html) and then decoded in an output layer to estimate the score for each value. <br>
+
+### Training
+
+### Value Denoising
