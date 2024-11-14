@@ -56,8 +56,8 @@ Our tokens are the data values $\mathbf{x}$, the embedded nodes, condtion mask a
 |-------------------------|:-------------------------:| :-------------------------:| :-------------------------:|:-------------------------:|
 ||Unique ID for every Value | Joint data $\hat{x}$ | Binary Conndition indicating observed or latent | Time in diffusion process|
 | **Shape** | `(batch_size, sequence_length)` | `(batch_size, sequence_length, 1)` | `(batch_size, sequence_length, 1)` | `(batch_size, 1)` |
-| **Example**          | `Sequence 1: [0, 1, 2]`<br>`Sequence 2: [0, 1, 2]`<br>`Sequence 3: [0, 1, 2]` | `[[0.1], [0.2], [0.3]]`<br>`[[1.1], [1.2], [1.3]]`<br>`[[2.1], [2.2], [2.3]]` | `[[0], [0], [1]]`<br>`[[0], [1], [1]]`<br>`[[1], [0], [1]]` | `[10]`<br>`[25]`<br>`[99]` |
-| **Embedding** | Nodes are embedded over `dim_id = 20` with [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Values are repeated across `dim_values = 20` | Condition mask is embedded over `dim_condition = 10` learnable parameters | Time is embedded over `dim_time = 20` with [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
+| **Example** | `[0, 1, 2]`<br>`[0, 1, 2]`<br>`[0, 1, 2]` | `[[0.1], [0.2], [0.3]]`<br>`[[1.1], [1.2], [1.3]]`<br>`[[2.1], [2.2], [2.3]]` | `[[0], [0], [1]]`<br>`[[0], [1], [1]]`<br>`[[1], [0], [1]]` | `[10]`<br>`[25]`<br>`[99]` |
+| **Embedding**        | Embedded over `dim_id = 20` using [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Repeated across `dim_values = 20` | Embedded over `dim_condition = 10` learnable parameters | Embedded over `dim_time = 20` using [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
 
 The tokens are passed through the [`nn.Transformer()`](https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html) and then decoded in an output layer to estimate the score for each value. <br>
 
