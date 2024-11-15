@@ -30,92 +30,32 @@ class GaussianFourierEmbedding(nn.Module):
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
 
-class BaseSDE():
-    """
-    A base class for SDEs. We assume that the SDE is of the form:
-
-    dX_t = f(t, X_t)dt + g(t, X_t)dW_t
-
-    where f and g are the drift and diffusion functions respectively. We assume that the initial distribution is given by p0 at time t=0.
-
-    Args:
-        drift (Callable): Drift function
-        diffusion (Callable): Diffusion function
-        p0 (Distribution): Initial distribution
-    """
-    def __init__(self, drift, diff):
-        self.drift = drift
-        self.diff = diff
-      
-    def diffusion(self, x, t):
-        eps = torch.randn_like(x)
-        return x + self.drift(t) + self.diff(t) * eps
-    
-
-class VPSDE(BaseSDE):
-    def __init__(self):
-        """
-        Variance Preserving Stochastic Differential Equation (VPSDE) class.
-        The VPSDE is defined as:
-            Drift     -> f(x,t) = -1/2 * beta_t * x
-            Diffusion -> g(t)   = sqrt(beta_t)
-        """
-        drift = lambda t: -0.5 * self.betas[t]
-        diff = lambda t: torch.sqrt(self.betas[t])
-
-        super().__init__(drift, diff)
-
-    def marginal_prob_std(self, t):
-        """
-        Compute the standard deviation of p_{0t}(x(t) | x(0)) for VPSDE.
-        Args:
-            t: A tensor or array of time steps (assumed in the range [0, 1]).
-        Returns:
-            The standard deviation for each time step.
-        """
-        # Scale t to match the length of betas
-        t_index = (t * (len(self.betas) - 1)).long()
-        
-        # Compute cumulative product of (1 - beta) up to each time index
-        alphas = 1.0 - self.betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
-        
-        # Select the cumulative product for each time step `t`
-        alpha_prod_t = alphas_cumprod[t_index]
-        
-        # Return the marginal standard deviation at time `t`
-        return torch.sqrt(1.0 - alpha_prod_t)
-
-
-class VESDE(BaseSDE):
-    def __init__(self, sigma_min=0.0001, sigma_max=15.0):
+class VESDE():
+    def __init__(self, sigma=25.0):
         """
         Variance Exploding Stochastic Differential Equation (VESDE) class.
         The VESDE is defined as:
             Drift     -> f(x,t) = 0
             Diffusion -> g(t)   = sigma^t
         """
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-
-        drift = lambda t: torch.zeros(1)
-        
-        _const = torch.sqrt(2 * torch.log(torch.tensor([self.sigma_max / self.sigma_min])))
-        diff = lambda t: self.sigma_min * (self.sigma_max / self.sigma_min) ** t * _const
-
-        super().__init__(drift, diff)
+        self.sigma = sigma
 
     def marginal_prob_std(self, t):
         """
         Compute the standard deviation of p_{0t}(x(t) | x(0)) for VESDE.
+
         Args:
-            t: A tensor or array of time steps.
+            t: A tensor of time steps.
         Returns:
             The standard deviation.
         """
-        return torch.sqrt((self.sigma_max ** (2 * t) - 1.0) / (2 * np.log(self.sigma_max)))
+        return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * np.log(self.sigma)))
 
 
+class VPSDE():
+    def __init__(self):
+        raise NotImplementedError("VPSDE is not implemented yet.")
+    
 
 # --------------------------------------------------------------------------------------------------
 
@@ -161,21 +101,23 @@ class Simformer(nn.Module):
     def linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
         return torch.linspace(start, end, timesteps)
 
-    def forward_diffusion_sample(self, x_0, t, device="cpu"):
+    def forward_diffusion_sample(self, x_0, t):
         # Diffusion process for time t with defined SDE
-        x_1 = self.sde.diffusion(x_0, t)
+        eps = torch.randn_like(x_0)
+        std = self.sde.marginal_prob_std(t)
+        x_1 = x_0 + std * eps
         return x_1
     
     def output_scale_function(self, t, x):
         t = t.reshape(-1, 1, 1)
         scale = torch.clamp(self.sde.marginal_prob_std(t), min=1e-2)
-        return (x/scale).reshape(x.shape)
+        return (- scale * x).reshape(x.shape)
     
     # ------------------------------------
     # /////////// Forward pass ///////////
     # Predict the score for the given input data 
 
-    def forward(self, x, timestep, condition_mask, edge_mask=None):
+    def forward_transformer(self, x, timestep, condition_mask, edge_mask=None):
 
         # --- Reshape input ---
         # shaping data in the form of (batch_size, sequence_length, values)
