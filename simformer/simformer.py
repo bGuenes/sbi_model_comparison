@@ -154,6 +154,25 @@ class Simformer(nn.Module):
         return score
     
     # ------------------------------------
+    # /////////// Loss function ///////////
 
+    def loss_fn(self, pred, target, timestep):
+        '''
+        Loss function for the score prediction task
+
+        Args:
+            pred: Predicted score
+            target: Target score
+                    
+        The target is the noise added to the data at a specific timestep 
+        Meaning the prediction is the approximation of the noise added to the data
+        '''
+        loss = -0.5 * self.sde.marginal_prob_std(timestep)**2 * F.mse_loss(pred, target)
+
+        return loss
     
+    # ------------------------------------
+    # /////////// Training ///////////
 
+    def training():
+        raise NotImplementedError("Training method is not implemented yet.")
