@@ -141,7 +141,7 @@ class Simformer(nn.Module):
 
         # --- Transformer ---
         # Transformer forward pass
-        transformer_output = self.transformer(x_encoded, x_encoded, src_key_padding_mask=edge_mask)
+        transformer_output = self.transformer(x_encoded, x_encoded)
         transformer_output = transformer_output.permute(1, 0, 2)  # Reorder back to (batch_size, seq_len, d_model)
 
         # --- Output decoding ---
@@ -176,7 +176,7 @@ class Simformer(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
-    def train(self, data, condition_mask, batch_size=64, epochs=10, lr=1e-3):
+    def train(self, data, condition_mask, batch_size=64, epochs=10, lr=1e-3, device="cpu"):
         # Define the optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
@@ -191,7 +191,7 @@ class Simformer(nn.Module):
                 x_0 = data[i:i+batch_size]
 
                 # Pick random timesteps in diffusion process
-                index_t = torch.randint(0, self.timesteps, (batch_size,))
+                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
                 timestep = self.t[index_t].reshape(-1, 1)
 
                 noise = torch.randn_like(x_0)
@@ -205,6 +205,6 @@ class Simformer(nn.Module):
                 loss.backward()
                 optimizer.step()
 
-            print(f"Epoch: {epoch}, Loss: {loss_epoch:.4f}")
+            print(f"Epoch: {epoch}, Loss: {loss_epoch}")
         
     # ------------------------------------
