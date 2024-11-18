@@ -67,9 +67,9 @@ class Simformer(nn.Module):
     def __init__(self, timesteps, data_shape, sde_type="vesde", dim_value=20, dim_id=20, dim_condition=10, dim_time=64):
         super(Simformer, self).__init__()
 
-        self.betas = self.linear_beta_schedule(timesteps=timesteps)
-        self.alphas = 1. - self.betas
-        self.alphas_cumprod = torch.cumprod(self.alphas, axis=0) # Cumulative product of alphas at each timestep
+        # Time steps in the diffusion process
+        self.timesteps = timesteps
+        self.t = torch.linspace(0, 1, self.timesteps)
 
         # initialize SDE
         if sde_type == "vesde":
@@ -98,20 +98,18 @@ class Simformer(nn.Module):
     # ------------------------------------
     # /////////// Helper functions ///////////
 
-    def linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
-        return torch.linspace(start, end, timesteps)
-
-    def forward_diffusion_sample(self, x_0, t):
+    def forward_diffusion_sample(self, x_0, t, noise=None):
         # Diffusion process for time t with defined SDE
-        eps = torch.randn_like(x_0)
-        std = self.sde.marginal_prob_std(t)
-        x_1 = x_0 + std * eps
+        if noise is None:
+            noise = torch.randn_like(x_0)
+
+        std = self.sde.marginal_prob_std(t).reshape(-1, 1)
+        x_1 = x_0 + std * noise
         return x_1
     
     def output_scale_function(self, t, x):
-        t = t.reshape(-1, 1, 1)
-        scale = torch.clamp(self.sde.marginal_prob_std(t), min=1e-2)
-        return (- scale * x).reshape(x.shape)
+        scale = self.sde.marginal_prob_std(t)
+        return x / scale.unsqueeze(1)
     
     # ------------------------------------
     # /////////// Forward pass ///////////
@@ -149,6 +147,8 @@ class Simformer(nn.Module):
         # --- Output decoding ---
         # Score estimate output layer
         out = self.output_layer(transformer_output)
+
+        # --- Normalize output ---
         score = self.output_scale_function(timestep, out)
 
         return score
@@ -156,7 +156,7 @@ class Simformer(nn.Module):
     # ------------------------------------
     # /////////// Loss function ///////////
 
-    def loss_fn(self, pred, target, timestep):
+    def loss_fn(self, pred, timestep, noise):
         '''
         Loss function for the score prediction task
 
@@ -167,12 +167,44 @@ class Simformer(nn.Module):
         The target is the noise added to the data at a specific timestep 
         Meaning the prediction is the approximation of the noise added to the data
         '''
-        loss = -0.5 * self.sde.marginal_prob_std(timestep)**2 * F.mse_loss(pred, target)
+        std = self.sde.marginal_prob_std(timestep).unsqueeze(1)
+        noise = noise.unsqueeze(1)
+        loss = torch.mean(torch.sum((pred*std + noise)**2))
 
         return loss
     
     # ------------------------------------
     # /////////// Training ///////////
 
-    def training():
-        raise NotImplementedError("Training method is not implemented yet.")
+    def train(self, data, condition_mask, batch_size=64, epochs=10, lr=1e-3):
+        # Define the optimizer
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+        # Training loop
+        for epoch in range(epochs):
+            
+            loss_epoch = 0
+
+            for i in range(0, data.shape[0], batch_size):
+                optimizer.zero_grad()
+
+                x_0 = data[i:i+batch_size]
+
+                # Pick random timesteps in diffusion process
+                index_t = torch.randint(0, self.timesteps, (batch_size,))
+                timestep = self.t[index_t].reshape(-1, 1)
+
+                noise = torch.randn_like(x_0)
+
+                x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
+
+                score = self.forward_transformer(x_1, timestep, condition_mask[i:i+batch_size])
+                loss = self.loss_fn(score, timestep, noise)
+                loss_epoch += loss.item()
+
+                loss.backward()
+                optimizer.step()
+
+            print(f"Epoch: {epoch}, Loss: {loss_epoch:.4f}")
+        
+    # ------------------------------------
