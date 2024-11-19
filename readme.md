@@ -5,14 +5,32 @@ We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [t
 ## Diffusion Model
 
 ### Perturbing Data with a Diffusion Process
-For the training of the simformer we have to first turn our data into noise and then train the simformer to denoise it for every timestep. <br>
+For the training of the simformer we have to first turn our data into noise and then train the diffusion model to denoise it for every timestep. <br>
 The diffusion process is defined by the following equation:
 
 $$
 d\mathbf{x} = \mathbf{f}(\mathbf{x},t) dt + g(t) d\mathbf{w}
 $$
 
-where $\mathbf{f}(\cdot, t): \mathbb{R}^d \to \mathbb{R}^d$ is called the *drift coefficient* of the SDE, $g(t) \in \mathbb{R}$ is called the *diffusion coefficient*, and $\mathbf{w}$ represents the standard Brownian motion.
+where $\mathbf{f}(\cdot, t): \mathbb{R}^d \to \mathbb{R}^d$ is called the *drift coefficient* of the SDE, $g(t) \in \mathbb{R}$ is called the *diffusion coefficient*, and $\mathbf{w}$ represents the standard Brownian motion. <br>
+We use a Variance Exploding SDE (VESDE) for the diffusion process, where the *drift* and *diffusion coefficients* are defined as followed:
+
+$$
+\mathbf{f}(\mathbf{x}, t) = \mathbf{0} \quad \text{and} \quad g(t) = \sigma^t
+$$
+
+where $\sigma$ is a hyperparameter that controls the scale of the diffusion process. <br>
+Following the theory of SDEs, we can formulate the pertubated data distribution at timestep $t$ as:
+
+$$
+    p_{0t}(\mathbf{x}_t|\mathbf{x}_0) = \mathcal{N} \bigg( \mathbf{x}_t | \mathbf{x}_0, \frac{1}{2 \ln \sigma}(\sigma^{2t}-1)\mathbf{I} \bigg)
+$$
+
+So the variance function over time of the pertubated data distribution is given by:
+
+$$
+    \sigma_t^2 = \frac{1}{2 \ln \sigma}(\sigma^{2t}-1)
+$$
 
 Step-by-step diffusion process with Variance Exploding SDE (VESDE): <br>
 
@@ -37,15 +55,15 @@ $$
 
 where $\sigma$ is a hyperparameter that controls the scale of the diffusion process. <br> <br>
 The remaining unkown would then only be the score-function $\nabla_\mathbf{x} \log p_t(\mathbf{x})$ to numerically obtain samples $p_0$ from the prior distribution $p_T$. <br>
-That can be done by approximating the score function
+That can be done by approximating the score function with a neural network.
 
 $$
 s_{\theta}(\mathbf{x},t) \approx \nabla_\mathbf{x} \log p_t(\mathbf{x})
 $$
 
-with a neural network. In this case, we use a transformer architecture to approximate the score function. <br>
+In this case, we use a transformer architecture to approximate the score function. <br>
 
-### Time-Dependent Score-Based Function
+### Time-Dependent Score-Based Model
 In theory there are no limitations on the model used to approximate the score function. However, as proposed in the [All-in-one Simualtion Based Inference](https://arxiv.org/abs/2404.09636) paper, we use a transformer architecture as they  overcome limitations of feed-forward networks in effectively dealing with sequential inputs. <br>
 
 The transformer takes tokens as inputs and processes them in parallel. The transformer consists of an encoder and a decoder. The encoder processes the input tokens and the decoder processes the output tokens. The transformer uses self-attention to weigh the importance of each token in the input sequence. <br>
