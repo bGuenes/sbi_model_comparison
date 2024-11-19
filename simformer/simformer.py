@@ -148,10 +148,7 @@ class Simformer(nn.Module):
         # Score estimate output layer
         out = self.output_layer(transformer_output)
 
-        # --- Normalize output ---
-        score = self.output_scale_function(timestep, out)
-
-        return score
+        return out
     
     # ------------------------------------
     # /////////// Loss function ///////////
@@ -167,9 +164,10 @@ class Simformer(nn.Module):
         The target is the noise added to the data at a specific timestep 
         Meaning the prediction is the approximation of the noise added to the data
         '''
-        std = self.sde.marginal_prob_std(timestep).unsqueeze(1)
-        noise = noise.unsqueeze(1)
-        loss = torch.mean(torch.sum((pred*std + noise)**2))
+        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1)
+        noise = noise.unsqueeze(2)
+
+        loss = torch.mean(sigma_t**2 * torch.sum((noise-sigma_t*pred)**2))
 
         return loss
     

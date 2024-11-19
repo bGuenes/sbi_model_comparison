@@ -42,7 +42,7 @@ Galactic Parameters           |  Chemical Abundances
 Reversing the diffusion process is running the diffusion process backwards in time. 
 
 $$
-d\mathbf{x} = [\mathbf{f}(\mathbf{x}, t) - g^2(t)\nabla_{\mathbf{x}}\log p_t(\mathbf{x})] dt + g(t) d\bar{\mathbf{w}}
+d\mathbf{x} = \big[\mathbf{f}(\mathbf{x}, t) - g^2(t)\nabla_{\mathbf{x}}\log p_t(\mathbf{x}) \big] dt + g(t) d\bar{\mathbf{w}}
 $$
 
 where $\bar{\mathbf{w}}$ is a Brownian motion in the reverse time direction, and $dt$ represents an infinitesimal negative time step. This reverse SDE can be computed once we know the drift and diffusion coefficients of the forward SDE, as well as the score of $p_t(\mathbf{x})$ for each $t\in[0, T]$. <br>
@@ -102,3 +102,5 @@ The training process follows these steps:
 7. Update $\theta$ using gradient-based method with $\nabla_ {\theta}\mathcal{L}(\theta)$
 
 ### Value Denoising
+
+## Bayesian Model Comparison
