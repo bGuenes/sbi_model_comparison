@@ -81,4 +81,24 @@ The tokens are passed through the [`nn.Transformer()`](https://pytorch.org/docs/
 
 ### Training
 
+We can train a time-dependent score-based model $s_{\theta}(\mathbf{x},t)$ to approximate the score function $\nabla_{\mathbf{x}}\log p_t(\mathbf{x})$ to obtain samples from $p_0$ using samples from a prior distribution $p_T$. <br>
+During the training process our goal is to minimize the following weighted sum of denoising score matching objectives: 
+
+$$
+    \min_\theta \mathbb{E}_{t} \bigg[\lambda(t) \mathbb{E}_{\mathbf{x}_0}\mathbb{E}_{\mathbf{x}_t}\big[ \| s_\theta(\mathbf{x}_t,t) - \nabla_{\mathbf{x}}\log p_{t}(\mathbf{x})\|_2^2 \big]\bigg]
+$$
+
+The expectation over $\mathbf{x}_0$ can be estimated by samples from our original data distribution $p_0$. <br>
+The expectation over $\mathbf{x}_t$ can be estimated by samples from the pertubated data distribution $p_{0t}$. <br>
+And $\lambda(t)$ is the weighting function that can be used to assign different importance to different timesteps. In the case of our VESDE we set it to $\lambda(t) = \sigma_t^2$. <br>
+<br>
+The training process follows these steps:
+1. Pick a datapoint $\mathbf{x}_0$
+2. Sample $\mathbf{x}_1 \sim \mathcal{N}(\mathbf{x}|0,\mathbf{I})$
+3. Sample $t \sim \text{Uniform}(0,1)$
+4. Calculate $\mathbf{x}_t = \mathbf{x}_0 + \sqrt{\frac{1}{2 \ln \sigma}(\sigma^{2t}-1)} \cdot \mathbf{x}_1$. This is a sample from $p_{0t}(\mathbf{x}_t|\mathbf{x}_0)$
+5. Evaluate the score model at $\mathbf{x}_t$ and $t$, $s_{\theta}(\mathbf{x}_t,t)$
+6. Calculate the score matching loss for a single sample: $\mathcal{L}_t(\theta) = \sigma_t^2 ||\mathbf{x}_1-\sigma_ts_{\theta}(\mathbf{x}_t,t)||^2$
+7. Update $\theta$ using gradient-based method with $\nabla_{\theta}\mathcal{L}(\theta)$
+
 ### Value Denoising
