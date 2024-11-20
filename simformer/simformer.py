@@ -174,9 +174,11 @@ class Simformer(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
-    def train(self, data, condition_mask, batch_size=64, epochs=10, lr=1e-3, device="cpu"):
+    def train(self, data, condition_mask_data, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None):
         # Define the optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        self.train_loss = []
+        self.val_loss = []
 
         # Training loop
         for epoch in range(epochs):
@@ -196,13 +198,29 @@ class Simformer(nn.Module):
 
                 x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
 
-                score = self.forward_transformer(x_1, timestep, condition_mask[i:i+batch_size])
+                score = self.forward_transformer(x_1, timestep, condition_mask_data[i:i+batch_size])
                 loss = self.loss_fn(score, timestep, noise)
                 loss_epoch += loss.item()
 
                 loss.backward()
                 optimizer.step()
 
-            print(f"Epoch: {epoch}, Loss: {loss_epoch}")
+            # Validation set if provided
+            if val_data is not None:
+                val_loss = 0
+                x_0 = val_data
+                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
+
+                timestep = self.t[index_t].reshape(-1, 1)
+                noise = torch.randn_like(x_0)
+
+                x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
+                score = self.forward_transformer(x_1, timestep, condition_mask_val)
+                val_loss = self.loss_fn(score, timestep, noise).item()
+                
+            self.train_loss.append(loss_epoch)
+            self.val_loss.append(val_loss)
+
+            print(f'Epoch {epoch:{""}{2}} -- Training Loss: {loss_epoch:{""}{11}.3f} -- Validation Loss: {val_loss:{""}{11}.3f}')
         
     # ------------------------------------
