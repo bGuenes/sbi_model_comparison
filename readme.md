@@ -93,14 +93,81 @@ The expectation over $\mathbf{x}_ t$ can be estimated by samples from the pertub
 And $\lambda(t)$ is the weighting function that can be used to assign different importance to different timesteps. In the case of our VESDE we set it to $\lambda(t) = \sigma_t^2$. <br>
 <br>
 The training process follows these steps:
+
 1. Pick a datapoint $\mathbf{x}_0$
+
 2. Sample $\mathbf{x}_1 \sim \mathcal{N}(\mathbf{x}|0,\mathbf{I})$
+
 3. Sample $t \sim \text{Uniform}(0,1)$
+
 4. Calculate $\mathbf{x}_ t = \mathbf{x}_ 0 + \sqrt{\frac{1}{2 \ln \sigma}(\sigma^{2t}-1)} \cdot \mathbf{x}_ 1$. This is a sample from $p_ {0t}(\mathbf{x}_ t|\mathbf{x}_ 0)$
+
 5. Evaluate the score model at $\mathbf{x}_ t$ and $t$, $s_ {\theta}(\mathbf{x}_ t,t)$
+
 6. Calculate the score matching loss for a single sample: $\mathcal{L}_ t(\theta) = \sigma_ t^2 \Vert \mathbf{x}_ 1-\sigma_ t s_ {\theta}(\mathbf{x}_ t,t) \Vert ^2$
+
 7. Update $\theta$ using gradient-based method with $\nabla_ {\theta}\mathcal{L}(\theta)$
 
 ### Value Denoising
 
+(To be added...)
+
 ## Bayesian Model Comparison
+[Note: i-samples; j-models]
+
+We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}$ is best suited to describe the observations $x$. <br>
+We use Bayes' theorem to compare the models.
+
+$$ \begin{align*}
+P(\theta|x) &= \frac{P(x|\theta)P(\theta)}{P(x)} = \frac{\mathcal{L}(\theta) \cdot \pi(\theta)}{z} \\ \\
+\text{Posterior} &= \frac{\text{Likelihood} \times \text{Prior}}{\text{Evidence}}
+\end{align*} $$
+
+A crucial part of the model comparison is the computation of the evidence or marginal likelihood $z$. The evidence is the probability of  observing the data over all parameters $\theta$ and can be computed by marginalizing the likelihood over the prior. <br>
+
+$$
+P(\text{data}) = \int P(\text{data}|\theta)P(\theta) d\theta
+$$
+
+Unfortunatly in a high-dimensional parameter space, the evidence is intractable to compute. <br>
+But, the harmonic mean of the likelihood can be used to formulate an expression for the evidence. From which an estimation of the evidence can be derived [[Newton & Raftery 1994]](https://www.jstor.org/stable/2346025). <br>
+
+$$ \begin{align*}
+\rho &= \mathbb{E}_{p(\theta|x)} \bigg[ \frac{1}{\mathcal{L}(\theta)} \bigg] = \frac1z\\
+=> \hat{\rho} &= \frac{1}{N} \sum_{i=1}^N \frac{1}{\mathcal{L}(\theta_i)}
+\end{align*} $$
+
+This can fail catastrophically though, as the harmonic mean is very sensitive to outliers. <br>
+In case of SBI, like in this project, we can use the method proposed by [Mancini et al. 2023](https://academic.oup.com/rasti/article/2/1/710/7382245#supplementary-data) by using a harmonic mean estimator. <br>
+
+
+$$
+\hat{\rho}_{j} = \frac1N \sum_{i=1}^N \frac{\phi(\theta_i)}{q_{j}^{NLE}(x|\theta_i) p(\theta_i)} \quad \text{with} \quad \theta_i \sim q_{j}^{NPE}(\theta|x)
+$$
+
+Meaning the evidence can be calculated by estimating the harmonic mean of the likelihood, where we use a SBI for the Neural Posterior Estimation (NPE) and the Neural Likelihood Estimation (NLE). <br>
+$\phi(\theta_i)$ is the importance target which is approximatlly the posterior, but the target need onöy be normalized and have tighter tails than the true posterior. (Honestly I'm not really sure yet what this means!) <br>
+
+Now the benefit of using a diffusion model for SBI comes into play. The diffusion model from the previous section can be used to estimate the likelihood $q_{j}^{NLE}(x|\theta)$ and the posterior $q_{j}^{NPE}(\theta|x)$ of our system, meaning it is just needed to train one model to estimate the evidence $z$. <br>
+
+### Evidence Calculation
+
+1. Take observation sampe $x$
+
+2. Sample posterior $\theta_{i;j} \sim q_{j}^{NPE}(\theta|x)$ using the diffusion model for each model $\mathcal{M_j}$
+
+4. Evaluate likelihood at sample position $q_{j}^{NLE}(x|\theta)$ also using the diffusion model
+
+5. Compute evidence of model $\mathcal{M_j}$ form learned harmonic mean estimator $z_j = \hat{\rho_j}^{-1}$
+
+### Model Comparison
+To predict the best fitting model, we use Bayes update rule to calculate the posterior probability of each model. <br>
+
+$$ \begin{align*}
+P(\mathcal{M}_j|x) &= \frac{P(x|\mathcal{M}_j)P(\mathcal{M}_j)}{P(x)} \\\\
+&= q_{j}^{NLE}(x|\theta) \cdot \pi(\mathcal{M}_j) \cdot \hat \rho_j \\\\
+&= \frac{\pi(\mathcal{M}_j)}{N} \sum_{i=1}^N \frac{\phi(\theta_i)}{p(\theta_i)} \text{ maybe?}
+\end{align*} $$
+
+We start with a uniform prior over the models. By evaluating multiple observations, the posterior probability of each model can be updated. <br>
+The model with the highest posterior probability is the best fitting model. <br>
