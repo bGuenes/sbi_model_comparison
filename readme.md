@@ -115,7 +115,7 @@ The training process follows these steps:
 ## Bayesian Model Comparison
 [Note: i-samples; j-models]
 
-We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}$ is best suited to describe the observations $x$. <br>
+We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}_j$ is best suited to describe the observations $x$. <br>
 We use Bayes' theorem to compare the models.
 
 $$ \begin{align*}
@@ -133,7 +133,7 @@ Unfortunatly in a high-dimensional parameter space, the evidence is intractable 
 But, the harmonic mean of the likelihood can be used to formulate an expression for the evidence. From which an estimation of the evidence can be derived [[Newton & Raftery 1994]](https://www.jstor.org/stable/2346025). <br>
 
 $$ \begin{align*}
-\rho &= \mathbb{E}_{p(\theta|x)} \bigg[ \frac{1}{\mathcal{L}(\theta)} \bigg] = \frac1z\\
+\rho &= \mathbb{E}_ {p(\theta|x)} \bigg[ \frac{1}{\mathcal{L}(\theta)} \bigg] = \frac{1}{z} \\
 => \hat{\rho} &= \frac{1}{N} \sum_{i=1}^N \frac{1}{\mathcal{L}(\theta_i)}
 \end{align*} $$
 
@@ -142,7 +142,7 @@ In case of SBI, like in this project, we can use the method proposed by [Mancini
 
 
 $$
-\hat{\rho}_{j} = \frac1N \sum_{i=1}^N \frac{\phi(\theta_i)}{q_{j}^{NLE}(x|\theta_i) p(\theta_i)} \quad \text{with} \quad \theta_i \sim q_{j}^{NPE}(\theta|x)
+\hat{\rho}_ {j} = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{q_{j}^{NLE}(x|\theta_i) p(\theta_i)} \quad \text{with} \quad \theta_i \sim q_{j}^{NPE}(\theta|x)
 $$
 
 Meaning the evidence can be calculated by estimating the harmonic mean of the likelihood, where we use a SBI for the Neural Posterior Estimation (NPE) and the Neural Likelihood Estimation (NLE). <br>
@@ -164,9 +164,9 @@ Now the benefit of using a diffusion model for SBI comes into play. The diffusio
 To predict the best fitting model, we use Bayes update rule to calculate the posterior probability of each model. <br>
 
 $$ \begin{align*}
-P(\mathcal{M}_j|x) &= \frac{P(x|\mathcal{M}_j)P(\mathcal{M}_j)}{P(x)} \\\\
-&= q_{j}^{NLE}(x|\theta) \cdot \pi(\mathcal{M}_j) \cdot \hat \rho_j \\\\
-&= \frac{\pi(\mathcal{M}_j)}{N} \sum_{i=1}^N \frac{\phi(\theta_i)}{p(\theta_i)} \text{ maybe?}
+P(\mathcal{M}_ j|x) &= \frac{P(x|\mathcal{M}_ j) P(\mathcal{M}_ j)}{P(x)} \\\\
+&= q_ {j}^{NLE}(x|\theta) \cdot \pi(\mathcal{M}_ j) \cdot \hat \rho_ j \\\\
+&= \frac{\pi(\mathcal{M}_ j)}{N} \sum_{i=1}^N \frac{\phi(\theta_i)}{p(\theta_i)} \text{ (maybe?)}
 \end{align*} $$
 
 We start with a uniform prior over the models. By evaluating multiple observations, the posterior probability of each model can be updated. <br>
