@@ -165,8 +165,7 @@ To predict the best fitting model, we use Bayes update rule to calculate the pos
 
 $$ \begin{align*}
 P(\mathcal{M}_ j|x) &= \frac{P(x|\mathcal{M}_ j) P(\mathcal{M}_ j)}{P(x)} \\\\
-&= q_ {j}^{NLE}(x|\theta) \cdot \pi(\mathcal{M}_ j) \cdot \hat \rho_ j \\\\
-&= \frac{\pi(\mathcal{M}_ j)}{N} \sum_{i=1}^N \frac{\phi(\theta_i)}{p(\theta_i)} \text{ (maybe?)}
+&= q_ {j}^{NLE}(x|\theta) \cdot \pi(\mathcal{M}_ j) \cdot \hat \rho_ j
 \end{align*} $$
 
 We start with a uniform prior over the models. By evaluating multiple observations, the posterior probability of each model can be updated. <br>
