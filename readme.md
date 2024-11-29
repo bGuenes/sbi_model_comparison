@@ -1,4 +1,4 @@
-# Baysian model comparison with score-based diffusion SBI
+# Bayesian model comparison with score-based diffusion SBI
 
 We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [transformer](https://arxiv.org/abs/1706.03762) architecture ([simformer](https://arxiv.org/abs/2404.09636)) to do SBI for [model comparison](https://academic.oup.com/rasti/article/2/1/710/7382245). <br>
 
@@ -20,13 +20,13 @@ $$
 $$
 
 where $\sigma$ is a hyperparameter that controls the scale of the diffusion process. <br>
-Following the theory of SDEs, we can formulate the pertubated data distribution at timestep $t$ as:
+Following the theory of SDEs, we can formulate the perturbed data distribution at timestep $t$ as:
 
 $$
     p_{0t}(\mathbf{x}_t|\mathbf{x}_0) = \mathcal{N} \bigg( \mathbf{x}_t | \mathbf{x}_0, \frac{1}{2 \ln \sigma}(\sigma^{2t}-1)\mathbf{I} \bigg)
 $$
 
-So the variance function over time of the pertubated data distribution is given by:
+So the variance function over time of the perturbed data distribution is given by:
 
 $$
     \sigma_t^2 = \frac{1}{2 \ln \sigma}(\sigma^{2t}-1)
@@ -54,7 +54,7 @@ $$
 $$
 
 where $\sigma$ is a hyperparameter that controls the scale of the diffusion process. <br> <br>
-The remaining unkown would then only be the score-function $\nabla_\mathbf{x} \log p_t(\mathbf{x})$ to numerically obtain samples $p_0$ from the prior distribution $p_T$. <br>
+The remaining unknown would then only be the score-function $\nabla_\mathbf{x} \log p_t(\mathbf{x})$ to numerically obtain samples $p_0$ from the prior distribution $p_T$. <br>
 That can be done by approximating the score function with a neural network.
 
 $$
@@ -68,11 +68,11 @@ In theory there are no limitations on the model used to approximate the score fu
 
 The transformer takes tokens as inputs and processes them in parallel. The transformer consists of an encoder and a decoder. The encoder processes the input tokens and the decoder processes the output tokens. The transformer uses self-attention to weigh the importance of each token in the input sequence. <br>
 
-Our tokens are the data values $\mathbf{x}$, the embedded nodes, condtion mask and the time $t$. 
+Our tokens are the data values $\mathbf{x}$, the embedded nodes, condition mask and the time $t$. 
 
 || Node ID | Values | Condition Mask | Time |
 |-------------------------|:-------------------------:| :-------------------------:| :-------------------------:|:-------------------------:|
-||Unique ID for every Value | Joint data $\hat{x}$ | Binary Conndition indicating observed or latent | Time in diffusion process|
+||Unique ID for every Value | Joint data $\hat{x}$ | Binary Condition indicating observed or latent | Time in diffusion process|
 | **Shape** | `(batch_size,sequence_length)` | `(batch_size,sequence_length,1)` | `(batch_size,sequence_length,1)` | `(batch_size,1)` |
 | **Example** | `[0, 1, 2]`<br>`[0, 1, 2]`<br>`[0, 1, 2]` | `[[0.1], [0.2], [0.3]]`<br>`[[1.1], [1.2], [1.3]]`<br>`[[2.1], [2.2], [2.3]]` | `[[0], [0], [1]]`<br>`[[0], [1], [1]]`<br>`[[1], [0], [1]]` | `[10]`<br>`[25]`<br>`[99]` |
 | **Embedding**        | Embedded over `dim_id=20` using [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Repeated across `dim_values=20` | Embedded over `dim_condition=10` learnable parameters | Embedded over `dim_time=20` using [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
@@ -110,10 +110,31 @@ The training process follows these steps:
 
 ### Value Denoising
 
-(To be added...)
+We use the Euler-Maruyama method to solve the SDE. 
+The Euler-Maruyama method is a simple and widely used method to solve SDEs. 
+It is a first-order method that approximates the solution of an SDE by discretizing the time interval into small steps. <br>
+
+$$
+\mathbf{x}_ {t+1} = \mathbf{x}_ t + \mathbf{f}(\mathbf{x}_ t,t) \Delta t + g(t) \Delta \mathbf{w}
+$$
+
+where 
+
+$$
+\Delta \mathbf{w} = \mathbf{w}_ {t+1} - \mathbf{w}_ t = s_ {\theta}(\mathbf{x}_ t,t)
+$$
+
+Basically we take a sample $x_T$ from the prior distribution $p_ T$ and give it to the transformer to get the score $s_ {\theta}(\mathbf{x}_ T,T)$. <br>
+This gives us the noise that needs to be subtracted from the sample $x_T$. This gives us then a marginally denoised version of the sample. <br> 
+These steps can be repeated to get a fully denoised sample $x_0$ at $t=0$. <br>
+
+### Conditining 
+Tell the model which values are observed and which are latent. <br>
+(Not sure how to do this yet)
 
 ## Bayesian Model Comparison
 [Note: i-samples; j-models]
+(Maybe the evidence should be calculated over all models at not per model; have to look into this)
 
 We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}_j$ is best suited to describe the observations $x$. <br>
 We use Bayes' theorem to compare the models.
@@ -129,7 +150,7 @@ $$
 P(\text{data}) = \int P(\text{data}|\theta)P(\theta) d\theta
 $$
 
-Unfortunatly in a high-dimensional parameter space, the evidence is intractable to compute. <br>
+Unfortunately in a high-dimensional parameter space, the evidence is intractable to compute. <br>
 But, the harmonic mean of the likelihood can be used to formulate an expression for the evidence. From which an estimation of the evidence can be derived [[Newton & Raftery 1994]](https://www.jstor.org/stable/2346025). <br>
 
 $$ \begin{align*}
@@ -146,13 +167,13 @@ $$
 $$
 
 Meaning the evidence can be calculated by estimating the harmonic mean of the likelihood, where we use a SBI for the Neural Posterior Estimation (NPE) and the Neural Likelihood Estimation (NLE). <br>
-$\phi(\theta_i)$ is the importance target which is approximatlly the posterior, but the target need onöy be normalized and have tighter tails than the true posterior. (Honestly I'm not really sure yet what this means!) <br>
+$\phi(\theta_i)$ is the importance target which is approximatlly the posterior, but the target need only be normalized and have tighter tails than the true posterior. (Honestly I'm not really sure yet what this means!) <br>
 
 Now the benefit of using a diffusion model for SBI comes into play. The diffusion model from the previous section can be used to estimate the likelihood $q_{j}^{NLE}(x|\theta)$ and the posterior $q_{j}^{NPE}(\theta|x)$ of our system, meaning it is just needed to train one model to estimate the evidence $z$. <br>
 
 ### Evidence Calculation
 
-1. Take observation sampe $x$
+1. Take observation sample $x$
 
 2. Sample posterior $\theta_{i;j} \sim q_{j}^{NPE}(\theta|x)$ using the diffusion model for each model $\mathcal{M_j}$
 
