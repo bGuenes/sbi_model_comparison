@@ -5,6 +5,8 @@ from torch.nn import Transformer
 
 import numpy as np
 
+import tqdm
+
 # --------------------------------------------------------------------------------------------------
 
 class GaussianFourierEmbedding(nn.Module):
@@ -223,4 +225,16 @@ class Simformer(nn.Module):
 
             print(f'Epoch {epoch:{""}{2}} -- Training Loss: {loss_epoch:{""}{11}.3f} -- Validation Loss: {val_loss:{""}{11}.3f}')
         
+
     # ------------------------------------
+    # /////////// Sample ///////////
+
+    def sample(self, data, condition_mask):
+        x = data
+        
+        for t in tqdm.tqdm(reversed(self.t)):
+            timestep = t.reshape(-1, 1)
+            score = self.forward_transformer(x, timestep, condition_mask)
+            x = x - score
+
+        return x
