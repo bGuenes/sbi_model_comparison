@@ -136,11 +136,11 @@ Tell the model which values are observed and which are latent. <br>
 [Note: i-samples; j-models]
 (Maybe the evidence should be calculated over all models at not per model; have to look into this)
 
-We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}_j$ is best suited to describe the observations $x$. <br>
+We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}$ is best suited to describe the observations $x$. <br>
 We use Bayes' theorem to compare the models.
 
 $$ \begin{align*}
-P(\theta|x) &= \frac{P(x|\theta)P(\theta)}{P(x)} = \frac{\mathcal{L}(\theta) \cdot \pi(\theta)}{z} \\ \\
+P(\theta|x;\mathcal{M}) &= \frac{P(x|\theta;\mathcal{M})P(\theta|\mathcal{M})}{P(x|\mathcal{M})} = \frac{\mathcal{L}(\theta) \cdot \pi(\theta)}{z} \\ \\
 \text{Posterior} &= \frac{\text{Likelihood} \times \text{Prior}}{\text{Evidence}}
 \end{align*} $$
 
