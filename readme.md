@@ -2,6 +2,8 @@
 
 We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [transformer](https://arxiv.org/abs/1706.03762) architecture ([simformer](https://arxiv.org/abs/2404.09636)) to do SBI for [model comparison](https://academic.oup.com/rasti/article/2/1/710/7382245). <br>
 
+---
+---
 ## Diffusion Model
 
 ### Perturbing Data with a Diffusion Process
@@ -130,13 +132,13 @@ These steps can be repeated to get a fully denoised sample $x_0$ at $t=0$. <br>
 
 ### Conditining 
 Tell the model which values are observed and which are latent. <br>
-(Not sure how to do this yet)
+> **_Note:_** Not sure how to do this yet
 
+---
+---
 ## Bayesian Model Comparison
-[Note: i-samples; j-models]
-(Maybe the evidence should be calculated over all models at not per model; have to look into this)
 
-We have different models, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}$ is best suited to describe the observations $x$. <br>
+We have different models $\mathcal{M}$, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}$ is best suited to describe the observations $x$. <br>
 We use Bayes' theorem to compare the models.
 
 $$ \begin{align*}
@@ -150,43 +152,56 @@ $$
 P(\text{data}) = \int P(\text{data}|\theta)P(\theta) d\theta
 $$
 
-Unfortunately in a high-dimensional parameter space, the evidence is intractable to compute. <br>
-But, the harmonic mean of the likelihood can be used to formulate an expression for the evidence. From which an estimation of the evidence can be derived [[Newton & Raftery 1994]](https://www.jstor.org/stable/2346025). <br>
+### Learned Harmonic Mean Estimator
+Unfortunately in a high-dimensional parameter space, the evidence is computationally intractable. <br>
+The learned harmonic mean estimator gives us a method to estimate the evidence for that case with the use of importance sampling. <br> 
+
+We utilize the fact that the harmonic mean of the likelihoods is the reciprocal of the evidence. <br>
+The harmonic mean estimator is given by [[Newton & Raftery 1994](https://www.jstor.org/stable/2346025)]:
 
 $$ \begin{align*}
-\rho &= \mathbb{E}_ {p(\theta|x)} \bigg[ \frac{1}{\mathcal{L}(\theta)} \bigg] = \frac{1}{z} \\
-=> \hat{\rho} &= \frac{1}{N} \sum_{i=1}^N \frac{1}{\mathcal{L}(\theta_i)}
+\rho &= \mathbb{E}_ {P(\theta|x)} [\frac1{\mathcal{L}(\theta)}] \\
+ &= \int d\theta \frac1{\mathcal{L}(\theta)}P(\theta|x) \\
+ &= \int d\theta \frac1{\mathcal{L}(\theta)}\frac{\mathcal{L}(\theta) \pi(\theta)}{z} \\
+ &= \frac1z \\
+=> \hat\rho &=\frac1N \sum_{i=1}^{N} \frac1{\mathcal{L}(\theta)}
 \end{align*} $$
 
-This can fail catastrophically though, as the harmonic mean is very sensitive to outliers. <br>
-In case of SBI, like in this project, we can use the method proposed by [Mancini et al. 2023](https://academic.oup.com/rasti/article/2/1/710/7382245#supplementary-data) by using a harmonic mean estimator. <br>
-
-
+If we treat this as an importance sampling problem, we can elimate the problem of an exploding variance. <br>
+Therefore we introduce a new target distribution $\phi(\theta)$. <br>
+The harmonic mean estimator can then be re-written as [[Mancini et al. 2023](https://academic.oup.com/rasti/article/2/1/710/7382245#supplementary-data)]:
 $$
-\hat{\rho}_ {j} = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{q_{j}^{NLE}(x|\theta_i) p(\theta_i)} \quad \text{with} \quad \theta_i \sim q_{j}^{NPE}(\theta|x)
+\rho = z^{-1} = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{\mathcal{L}(\theta_i)\pi(\theta_i)}, \quad \text{where } \theta_i \sim p(\theta|\text{data})
 $$
 
-Meaning the evidence can be calculated by estimating the harmonic mean of the likelihood, where we use a SBI for the Neural Posterior Estimation (NPE) and the Neural Likelihood Estimation (NLE). <br>
-$\phi(\theta_i)$ is the importance target which is approximatlly the posterior, but the target need only be normalized and have tighter tails than the true posterior. (Honestly I'm not really sure yet what this means!) <br>
+Where we sample from the posterior distribution and calculate the likelihood of the sample.<br>
+The ideal target distribution $\phi(\theta)$ is the posterior distribution $p(\theta|\text{data})$ which we can learn using SBI, like described in the previous section. 
+<br>
 
-Now the benefit of using a diffusion model for SBI comes into play. The diffusion model from the previous section can be used to estimate the likelihood $q_{j}^{NLE}(x|\theta)$ and the posterior $q_{j}^{NPE}(\theta|x)$ of our system, meaning it is just needed to train one model to estimate the evidence $z$. <br>
+> **_NOTE:_** The paper states, that the target distribution $\phi(\theta)$ should not be the learned NPE, but instead be a different model, that however approximates the posterior aswell. <br>
+ Honestly I'm not really sure yet what this means! <br>
+
+Now the benefit of using a diffusion model for SBI comes into play. 
+The diffusion model from the previous section can be used to estimate the likelihood $\mathcal{L}(\theta)$
+ and the posterior $\phi(\theta)$ of our system, 
+ meaning it is just needed to train one model to estimate the evidence $z$. <br>
 
 ### Evidence Calculation
 
-1. Take observation sample $x$
+1. Take observation sample $x_i$
 
-2. Sample posterior $\theta_{i;j} \sim q_{j}^{NPE}(\theta|x)$ using the diffusion model for each model $\mathcal{M_j}$
+2. Sample posterior $\theta_{i;j} \sim P_j(\theta|x_i)$ using the diffusion model for each model $\mathcal{M_j}$
 
-4. Evaluate likelihood at sample position $q_{j}^{NLE}(x|\theta)$ also using the diffusion model
+3. Evaluate likelihood at sample position $\mathcal{L}_j(\theta_ {i;j})$ also using the diffusion model
 
-5. Compute evidence of model $\mathcal{M_j}$ form learned harmonic mean estimator $z_j = \hat{\rho_j}^{-1}$
+$=>$  Compute evidence $z$ by repeating $1.-3.$ $N$-times and then using the harmonic mean estimator $\hat \rho = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{\mathcal{L}(\theta_i)\pi(\theta_i)}$
 
 ### Model Comparison
 To predict the best fitting model, we use Bayes update rule to calculate the posterior probability of each model. <br>
 
 $$ \begin{align*}
 P(\mathcal{M}_ j|x) &= \frac{P(x|\mathcal{M}_ j) P(\mathcal{M}_ j)}{P(x)} \\\\
-&= q_ {j}^{NLE}(x|\theta) \cdot \pi(\mathcal{M}_ j) \cdot \hat \rho_ j
+&= \frac{\mathcal{L}_j(\theta_ {i;j}) \cdot \pi(\mathcal{M}_ j)}{z}
 \end{align*} $$
 
 We start with a uniform prior over the models. By evaluating multiple observations, the posterior probability of each model can be updated. <br>
