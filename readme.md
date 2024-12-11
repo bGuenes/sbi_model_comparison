@@ -201,7 +201,7 @@ To predict the best fitting model, we use Bayes update rule to calculate the pos
 
 $$ \begin{align*}
 P(\mathcal{M}_ j|x) &= \frac{P(x|\mathcal{M}_ j) P(\mathcal{M}_ j)}{P(x)} \\\\
-&= \frac{\mathcal{L}_j(\theta_ {i;j}) \cdot \pi(\mathcal{M}_ j)}{z}
+&= \frac{\mathcal{L}_ j(\theta_ {i;j}) \cdot \pi(\mathcal{M}_ j)}{z}
 \end{align*} $$
 
 We start with a uniform prior over the models. By evaluating multiple observations, the posterior probability of each model can be updated. <br>
