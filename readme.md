@@ -2,6 +2,18 @@
 
 We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [transformer](https://arxiv.org/abs/1706.03762) architecture ([simformer](https://arxiv.org/abs/2404.09636)) to do SBI for [model comparison](https://academic.oup.com/rasti/article/2/1/710/7382245). <br>
 
+``` mermaid
+flowchart LR
+    A@{label: "Simulation Data", shape: cyl} --> |train| B(Diffusion Model) 
+    B --> C((NLE))
+    B --> D((NPE))
+    A --> |posterior estimate| D
+    D --> |evaluate likelihood| C
+    C & D --> F([Marginal Likelihood])
+    C & F --> G([Updated Model Prior])
+    
+```
+
 ---
 ---
 ## Diffusion Model
