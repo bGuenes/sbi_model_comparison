@@ -89,7 +89,7 @@ Our tokens are the data values $\mathbf{x}$, the embedded nodes, condition mask 
 ||Unique ID for every Value | Joint data $\hat{x}$ | Binary Condition indicating observed or latent | Time in diffusion process|
 | **Shape** | `(batch_size,sequence_length)` | `(batch_size,sequence_length,1)` | `(batch_size,sequence_length,1)` | `(batch_size,1)` |
 | **Example** | `[0, 1, 2]`<br>`[0, 1, 2]`<br>`[0, 1, 2]` | `[[0.1], [0.2], [0.3]]`<br>`[[1.1], [1.2], [1.3]]`<br>`[[2.1], [2.2], [2.3]]` | `[[0], [0], [1]]`<br>`[[0], [1], [1]]`<br>`[[1], [0], [1]]` | `[10]`<br>`[25]`<br>`[99]` |
-| **Embedding**        | Embedded over `dim_id=20` using [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Repeated across `dim_values=20` | Embedded over `dim_condition=10` learnable parameters | Embedded over `dim_time=20` using [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
+| **Embedding**        | Embedded over `dim_id=20` using [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Repeated across `dim_values=20` | Embedded over `dim_condition=10` learnable parameters | Embedded over `dim_time=64` using [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
 
 The tokens are passed through the [`nn.Transformer()`](https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html) and then decoded in an output layer to estimate the score for each value. <br>
 
@@ -122,7 +122,7 @@ The training process follows these steps:
 
 7. Update $\theta$ using gradient-based method with $\nabla_ {\theta}\mathcal{L}(\theta)$
 
-### Value Denoising
+### Sampling
 
 We use the Euler-Maruyama method to solve the SDE. 
 The Euler-Maruyama method is a simple and widely used method to solve SDEs. 
@@ -138,8 +138,15 @@ $$
 \Delta \mathbf{w} = \mathbf{w}_ {t+1} - \mathbf{w}_ t = s_ {\theta}(\mathbf{x}_ t,t)
 $$
 
+We can then rewrite the denoising step at time $t$ as:
+
+$$
+\mathbf{x}_ {t-1} = \mathbf{x}_ t + \frac12 \sigma^{2t} s_ {\theta}(\mathbf{x}_ t,t)dt
+$$
+
+
 Basically we take a sample $x_T$ from the prior distribution $p_ T$ and give it to the transformer to get the score $s_ {\theta}(\mathbf{x}_ T,T)$. <br>
-This gives us the noise that needs to be subtracted from the sample $x_T$. This gives us then a marginally denoised version of the sample. <br> 
+With that we can calculate the noise that needs to be subtracted from the sample $x_T$, which returns a slightly denoised sample. <br>
 These steps can be repeated to get a fully denoised sample $x_0$ at $t=0$. <br>
 
 ### Conditining 
@@ -183,7 +190,7 @@ If we treat this as an importance sampling problem, we can elimate the problem o
 Therefore we introduce a new target distribution $\phi(\theta)$. <br>
 The harmonic mean estimator can then be re-written as [[Mancini et al. 2023](https://academic.oup.com/rasti/article/2/1/710/7382245#supplementary-data)]:
 $$
-\rho = z^{-1} = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{\mathcal{L}(\theta_i)\pi(\theta_i)}, \quad \text{where } \theta_i \sim p(\theta|\text{data})
+\rho = z^{-1} = \frac1N \sum_ {i=1}^{N} \frac{\phi(\theta_ i)}{\mathcal{L}(\theta_ i)\pi(\theta_ i)}, \quad \text{where } \theta_ i \sim p(\theta|\text{data})
 $$
 
 Where we sample from the posterior distribution and calculate the likelihood of the sample.<br>

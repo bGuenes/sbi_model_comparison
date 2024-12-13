@@ -13,9 +13,9 @@ class GaussianFourierEmbedding(nn.Module):
     """Gaussian Fourier embedding module. Mostly used to embed time.
 
     Args:
-        embed_dim (int, optional): Output dimesion. Defaults to 128.
+        embed_dim (int, optional): Output dimesion. Defaults to 64.
     """
-    def __init__(self, embed_dim, scale=30.):
+    def __init__(self, embed_dim=64, scale=30.):
         super().__init__()
         self.embed_dim = embed_dim
 
@@ -66,16 +66,17 @@ class Simformer(nn.Module):
     # /////////// Initialization ///////////
     # Initialize the Simformer model
 
-    def __init__(self, timesteps, data_shape, sde_type="vesde", dim_value=20, dim_id=20, dim_condition=10, dim_time=64):
+    def __init__(self, timesteps, data_shape, sde_type="vesde", sigma=25.0, dim_value=20, dim_id=20, dim_condition=10, dim_time=64):
         super(Simformer, self).__init__()
 
         # Time steps in the diffusion process
         self.timesteps = timesteps
         self.t = torch.linspace(0, 1, self.timesteps)
+        self.sigma = sigma
 
         # initialize SDE
         if sde_type == "vesde":
-            self.sde = VESDE()
+            self.sde = VESDE(sigma=self.sigma)
         elif sde_type == "vpsde":
             self.sde = VPSDE()
         else:
@@ -128,7 +129,7 @@ class Simformer(nn.Module):
 
         # --- Embedding ---
         # Time embedding
-        time_embedded = self.time_embedding(timestep).unsqueeze(1).expand(-1, seq_len, -1)
+        time_embedded = self.time_embedding(timestep).unsqueeze(1).expand(batch_size, seq_len, -1)
         # Value embedding
         value_embedded = self.embedding_net_value(x)
         # Node ID embedding
@@ -231,10 +232,12 @@ class Simformer(nn.Module):
 
     def sample(self, data, condition_mask):
         x = data
+        dt = 1/self.timesteps
         
         for t in tqdm.tqdm(reversed(self.t)):
             timestep = t.reshape(-1, 1)
-            score = self.forward_transformer(x, timestep, condition_mask)
-            x = x - score
+            score = self.forward_transformer(x, timestep, condition_mask).squeeze(-1)
+            x = x - 1/2 * self.sigma**(2*timestep)* score * dt
+            x = x.detach()
 
         return x
