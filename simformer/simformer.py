@@ -236,7 +236,7 @@ class Simformer(nn.Module):
         x_t = torch.zeros(x.shape[0], self.timesteps, x.shape[1])
         score_t = torch.zeros(x.shape[0], self.timesteps, x.shape[1])
         
-        for i, t in tqdm.tqdm(enumerate(reversed(self.t))):
+        for i, t in tqdm.tqdm(enumerate(reversed(self.t)), total=self.timesteps):
             timestep = t.reshape(-1, 1)
             score = self.forward_transformer(x, timestep, condition_mask).squeeze(-1)
             x = x - 1/2 * self.sigma**(2*timestep)* score * dt

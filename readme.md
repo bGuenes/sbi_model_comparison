@@ -149,6 +149,8 @@ Basically we take a sample $x_T$ from the prior distribution $p_ T$ and give it 
 With that we can calculate the noise that needs to be subtracted from the sample $x_T$, which returns a slightly denoised sample. <br>
 These steps can be repeated to get a fully denoised sample $x_0$ at $t=0$. <br>
 
+![](plots/test.gif)
+
 ### Conditining 
 Tell the model which values are observed and which are latent. <br>
 > **_Note:_** Not sure how to do this yet
