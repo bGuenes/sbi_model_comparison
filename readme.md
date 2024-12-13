@@ -189,6 +189,7 @@ $$ \begin{align*}
 If we treat this as an importance sampling problem, we can elimate the problem of an exploding variance. <br>
 Therefore we introduce a new target distribution $\phi(\theta)$. <br>
 The harmonic mean estimator can then be re-written as [[Mancini et al. 2023](https://academic.oup.com/rasti/article/2/1/710/7382245#supplementary-data)]:
+
 $$
 \rho = z^{-1} = \frac1N \sum_ {i=1}^{N} \frac{\phi(\theta_ i)}{\mathcal{L}(\theta_ i)\pi(\theta_ i)}, \quad \text{where } \theta_ i \sim p(\theta|\text{data})
 $$
