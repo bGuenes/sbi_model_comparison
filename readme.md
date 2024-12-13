@@ -141,7 +141,7 @@ $$
 We can then rewrite the denoising step at time $t$ as:
 
 $$
-\mathbf{x}_ {t-1} = \mathbf{x}_ t + \frac12 \sigma^{2t} s_ {\theta}(\mathbf{x}_ t,t)dt
+\mathbf{x}_ {t-1} = \mathbf{x}_ t - \frac12 \sigma^{2t} s_ {\theta}(\mathbf{x}_ t,t)dt
 $$
 
 
