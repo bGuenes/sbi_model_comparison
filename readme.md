@@ -4,13 +4,18 @@ We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [t
 
 ``` mermaid
 flowchart LR
-    A@{label: "Simulation Data", shape: cyl} --> |train| B(Diffusion Model) 
+    A@{label: "Simulation Data", shape: cyl} --> |train| B(Diffusion Model)
+    
+
     B --> C((NLE))
     B --> D((NPE))
-    A --> |posterior estimate| D
-    D --> |evaluate likelihood| C
-    C & D --> F([Marginal Likelihood])
-    C & F --> G([Updated Model Prior])
+    E@{label: "Observation Data", shape: cyl} --> |posterior estimate| D
+
+    D --> F([MAP])
+
+    F --> |evaluate likelihood| C
+    C & D --> G([Marginal Likelihood])
+    C & G --> H([Updated Model Prior])
     
 ```
 
