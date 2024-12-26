@@ -188,7 +188,7 @@ class Simformer(nn.Module):
             
             loss_epoch = 0
 
-            for i in range(0, data.shape[0], batch_size):
+            for i in tqdm.tqdm(range(0, data.shape[0], batch_size), leave=False):
                 optimizer.zero_grad()
 
                 x_0 = data[i:i+batch_size]
@@ -224,7 +224,7 @@ class Simformer(nn.Module):
             self.train_loss.append(loss_epoch)
             self.val_loss.append(val_loss)
 
-            print(f'Epoch {epoch:{""}{2}} -- Training Loss: {loss_epoch:{""}{11}.3f} -- Validation Loss: {val_loss:{""}{11}.3f}')
+            print(f'Epoch {epoch+1:{""}{2}}/{epochs} -- Training Loss: {loss_epoch:{""}{11}.3f} -- Validation Loss: {val_loss:{""}{11}.3f}')
         
 
     # ------------------------------------
