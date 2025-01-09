@@ -61,13 +61,13 @@ class VPSDE():
 
 # --------------------------------------------------------------------------------------------------
 
-class Simformer(nn.Module):
+class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Initialization ///////////
-    # Initialize the Simformer model
+    # Initialize the ModelTransfuser model
 
     def __init__(self, timesteps, data_shape, sde_type="vesde", sigma=25.0, dim_value=20, dim_id=20, dim_condition=10, dim_time=64):
-        super(Simformer, self).__init__()
+        super(ModelTransfuser, self).__init__()
 
         # Time steps in the diffusion process
         self.timesteps = timesteps
