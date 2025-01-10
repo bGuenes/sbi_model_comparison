@@ -5,7 +5,9 @@ from torch.nn import Transformer
 
 import numpy as np
 
+import sys
 import tqdm
+import time
 
 # --------------------------------------------------------------------------------------------------
 
@@ -124,8 +126,8 @@ class ModelTransfuser(nn.Module):
         # shaping data in the form of (batch_size, sequence_length, values)
         batch_size, seq_len = x.shape
         x = x.reshape(batch_size, seq_len, 1)
-        condition_mask = condition_mask.reshape(x.shape)
-        batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0))
+        condition_mask = condition_mask.reshape(x.shape).to(x.device)
+        batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0)).to(x.device)
 
         # --- Embedding ---
         # Time embedding
@@ -177,55 +179,75 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
-    def train(self, data, condition_mask_data, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None):
+    def train(self, data, condition_mask_data=None, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None):
+        start_time = time.time()
         # Define the optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         self.train_loss = []
         self.val_loss = []
+
+        if condition_mask_data is None:
+        # If no condition mask is provided, eg to just train posterior or likelihood
+        # the condition mask is sampled randomly over all data points to be able to predict the likelihood or posterior and also be able to work with missing data
+            condition_mask_random = torch.distributions.bernoulli.Bernoulli(torch.ones_like(data) * 0.33)
 
         # Training loop
         for epoch in range(epochs):
             
             loss_epoch = 0
 
-            for i in tqdm.tqdm(range(0, data.shape[0], batch_size), leave=False):
+            if condition_mask_data is None:
+                condition_mask_data = condition_mask_random.sample()
+
+            for i in tqdm.tqdm(range(0, data.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
                 optimizer.zero_grad()
 
-                x_0 = data[i:i+batch_size]
+                x_0 = data[i:i+batch_size].to(device)
+                condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
 
                 # Pick random timesteps in diffusion process
-                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
+                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
                 timestep = self.t[index_t].reshape(-1, 1)
 
                 noise = torch.randn_like(x_0)
 
                 x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
 
-                score = self.forward_transformer(x_1, timestep, condition_mask_data[i:i+batch_size])
+                score = self.forward_transformer(x_1, timestep, condition_mask_batch)
                 loss = self.loss_fn(score, timestep, noise)
                 loss_epoch += loss.item()
 
                 loss.backward()
                 optimizer.step()
+            
+            self.train_loss.append(loss_epoch)
 
             # Validation set if provided
             if val_data is not None:
                 val_loss = 0
-                x_0 = val_data
-                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
+                x_0 = val_data.to(device)
+                condition_mask_val.to(device)
+                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
 
-                timestep = self.t[index_t].reshape(-1, 1)
+                timestep = self.t[index_t].reshape(-1, 1).to(device)
                 noise = torch.randn_like(x_0)
 
                 x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
                 score = self.forward_transformer(x_1, timestep, condition_mask_val)
                 val_loss = self.loss_fn(score, timestep, noise).item()
                 
-            self.train_loss.append(loss_epoch)
-            self.val_loss.append(val_loss)
+                self.val_loss.append(val_loss)
 
-            print(f'Epoch {epoch+1:{""}{2}}/{epochs} -- Training Loss: {loss_epoch:{""}{11}.3f} -- Validation Loss: {val_loss:{""}{11}.3f}')
+                print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
+                print()
+
+            else:
+                print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
+                print()
         
+        end_time = time.time()
+        time_elapsed = (end_time - start_time) / 60
+        print(f"Training finished after {time_elapsed:.1f} minutes")
 
     # ------------------------------------
     # /////////// Sample ///////////
@@ -243,7 +265,7 @@ class ModelTransfuser(nn.Module):
             timestep = t.reshape(-1, 1)
             score = self.forward_transformer(x, timestep, condition_mask).squeeze(-1)
             dx = 1/2 * self.sigma**(2*timestep)* score * dt
-            x = x - dx
+            x = x - dx * (1-condition_mask)
             x = x.detach()
 
             self.x_t[:, i+1] = x
