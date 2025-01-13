@@ -159,8 +159,14 @@ Distribution Denoising | Single Sample Denoising
 ![](plots/test_big.gif) | ![](plots/test_quiver.gif)
 
 ### Conditining 
-Tell the model which values are observed and which are latent. <br>
-> **_Note:_** Not sure how to do this yet
+In order to perfome inference, we need to tell the model which values are observed and which are latent. <br>
+We can do this by passing a condition mask $M_C$ into the tokenizer. <br>
+The condition mask is a binary mask that indicates which values are observed and which are latent. <br>
+A condition value of $M_C ^{(i)} = 0$ corresponds to a latent value, that needs to be inferred and a condition value of $M_C ^{(i)} = 1$ corresponds to an observed value, which the model can use to infer the latent values. <br>
+The condition mask is passed to the transformer as an additional token and embedded as described in the table above. <br>
+
+During inference we also need to pass a condition mask to the model. <br>
+After the score calculation we multiply it by $1-M_C$ to set the score of the observed values to zero and therefore not change them. <br>
 
 ---
 ---
@@ -221,7 +227,7 @@ The diffusion model from the previous section can be used to estimate the likeli
 
 2. Sample posterior $\theta_{i;j} \sim P_j(\theta|x_i)$ using the diffusion model for each model $\mathcal{M_j}$
 
-3. Evaluate likelihood at sample position $\mathcal{L}_j(\theta_ {i;j})$ also using the diffusion model
+3. Evaluate likelihood at sample position $\mathcal{L}_ j (\theta_ {i;j})$ also using the diffusion model
 
 $=>$  Compute evidence $z$ by repeating $1.-3.$ $N$-times and then using the harmonic mean estimator $\hat \rho = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{\mathcal{L}(\theta_i)\pi(\theta_i)}$
 

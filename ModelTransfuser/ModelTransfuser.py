@@ -225,8 +225,11 @@ class ModelTransfuser(nn.Module):
             # Validation set if provided
             if val_data is not None:
                 val_loss = 0
+                if condition_mask_val is None:
+                    # If no condition mask is provided, then validate on all data points
+                    condition_mask_val = torch.zeros_like(val_data).to(device)
+
                 x_0 = val_data.to(device)
-                condition_mask_val.to(device)
                 index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
 
                 timestep = self.t[index_t].reshape(-1, 1).to(device)
@@ -252,25 +255,26 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Sample ///////////
 
-    def sample(self, data, condition_mask):
-        x = data
+    def sample(self, data, condition_mask, num_samples=1_000):
+        x = data.repeat(num_samples, 1)
+        condition_mask_samples = condition_mask.repeat(num_samples, 1)
         dt = 1/self.timesteps
-        self.x_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
-        self.score_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
-        self.dx_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
+        #self.x_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
+        #self.score_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
+        #self.dx_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
 
-        self.x_t[:, 0] = x
+        #self.x_t[:, 0] = x
         
         for i, t in tqdm.tqdm(enumerate(reversed(self.t)), total=self.timesteps):
             timestep = t.reshape(-1, 1)
-            score = self.forward_transformer(x, timestep, condition_mask).squeeze(-1)
+            score = self.forward_transformer(x, timestep, condition_mask_samples).squeeze(-1)
             dx = 1/2 * self.sigma**(2*timestep)* score * dt
             x = x - dx * (1-condition_mask)
             x = x.detach()
 
-            self.x_t[:, i+1] = x
-            self.dx_t[:, i] = dx
-            self.score_t[:, i] = score
+            #self.x_t[:, i+1] = x
+            #self.dx_t[:, i] = dx
+            #self.score_t[:, i] = score
 
         #self.x_t = x_t
         #self.score_t = score_t
