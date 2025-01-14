@@ -68,13 +68,14 @@ t = torch.linspace(0, 1, T)
 
 ModelTransfuser = ModelTransfuser(T, train_data.shape)
 
+ModelTransfuser.set_normalization(train_data)
 
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=50)
+ModelTransfuser.train(train_data, val_data=val_data, epochs=10)
 
-torch.save(ModelTransfuser.state_dict(), "ModelTransfuser/models/ModelTransfuser_t50_b50.pt")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_t50_normed.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -84,4 +85,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('ModelTransfuser_train_loss.png')
+plt.savefig('ModelTransfuser_train_loss_normed.png')

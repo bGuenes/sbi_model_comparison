@@ -5,6 +5,7 @@ from torch.nn import Transformer
 
 import numpy as np
 
+import pickle
 import sys
 import tqdm
 import time
@@ -23,7 +24,7 @@ class GaussianFourierEmbedding(nn.Module):
 
     def forward(self, x):
         half_dim = self.embed_dim // 2 + 1
-        B = torch.randn(half_dim, x.shape[-1])
+        B = torch.randn(half_dim, x.shape[-1], device=x.device)
         x = 2 * np.pi * torch.matmul(x, B.T)
         term1 = torch.cos(x)
         term2 = torch.sin(x)
@@ -90,7 +91,7 @@ class ModelTransfuser(nn.Module):
         # Token embedding layers for values, node IDs, and condition masks
         self.nodes_max = data_shape[1]  # Maximum number of nodes
         self.node_ids = torch.arange(self.nodes_max)  # Node IDs
-        self.embedding_net_value = lambda x: np.repeat(x, dim_value, axis=-1)  # Value embedding net (here we just repeat the value)
+        self.dim_value = dim_value
         self.embedding_net_id = nn.Embedding(self.nodes_max, dim_id)  # Embedding for node IDs
         self.condition_embedding = nn.Parameter(torch.randn(1, 1, dim_condition) * 0.5)  # Learnable condition embedding
 
@@ -108,12 +109,34 @@ class ModelTransfuser(nn.Module):
         if noise is None:
             noise = torch.randn_like(x_0)
 
-        std = self.sde.marginal_prob_std(t).reshape(-1, 1)
+        std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
         x_1 = x_0 + std * noise
         return x_1
     
+    def embedding_net_value(self, x):
+        # Value embedding net (here we just repeat the value)
+        dim_value=self.dim_value
+        return x.repeat(1,1,dim_value)
+    
+    def set_normalization(self, data):
+        """
+        Compute and set normalization parameters (mean and std) from the dataset.
+        """
+        self.mean = data.mean(dim=0, keepdim=True).to(data.device)
+        self.std = data.std(dim=0, keepdim=True).to(data.device)
+        print(f"Normalization parameters set.")
+
+    def normalize(self, x):
+        """
+        Normalize input data using the stored mean and std.
+        """
+        if self.mean is None or self.std is None:
+            raise ValueError("Normalization parameters are not set. Use `set_normalization` first.")
+        return (x - self.mean) / (self.std + 1e-6)  # Add epsilon to avoid division by zero
+
+    
     def output_scale_function(self, t, x):
-        scale = self.sde.marginal_prob_std(t)
+        scale = self.sde.marginal_prob_std(t).to(x.device)
         return x / scale.unsqueeze(1)
     
     # ------------------------------------
@@ -158,7 +181,7 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Loss function ///////////
 
-    def loss_fn(self, pred, timestep, noise):
+    def loss_fn(self, pred, timestep, noise, condition_mask):
         '''
         Loss function for the score prediction task
 
@@ -169,10 +192,11 @@ class ModelTransfuser(nn.Module):
         The target is the noise added to the data at a specific timestep 
         Meaning the prediction is the approximation of the noise added to the data
         '''
-        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1)
-        noise = noise.unsqueeze(2)
+        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1).to(pred.device)
+        noise = noise.unsqueeze(2).to(pred.device)
+        condition_mask = condition_mask.unsqueeze(2).to(pred.device)
 
-        loss = torch.mean(sigma_t**2 * torch.sum((noise-sigma_t*pred)**2))
+        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(noise-sigma_t*pred)**2))
 
         return loss
     
@@ -181,6 +205,9 @@ class ModelTransfuser(nn.Module):
 
     def train(self, data, condition_mask_data=None, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None):
         start_time = time.time()
+
+        self.to(device)
+
         # Define the optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         self.train_loss = []
@@ -191,6 +218,9 @@ class ModelTransfuser(nn.Module):
         # the condition mask is sampled randomly over all data points to be able to predict the likelihood or posterior and also be able to work with missing data
             condition_mask_random = torch.distributions.bernoulli.Bernoulli(torch.ones_like(data) * 0.33)
 
+        # Normalize data
+        data_normed = self.normalize(data)
+
         # Training loop
         for epoch in range(epochs):
             
@@ -199,22 +229,22 @@ class ModelTransfuser(nn.Module):
             if condition_mask_data is None:
                 condition_mask_data = condition_mask_random.sample()
 
-            for i in tqdm.tqdm(range(0, data.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
+            for i in tqdm.tqdm(range(0, data_normed.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
                 optimizer.zero_grad()
 
-                x_0 = data[i:i+batch_size].to(device)
+                x_0 = data_normed[i:i+batch_size].to(device)
                 condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
 
                 # Pick random timesteps in diffusion process
                 index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
-                timestep = self.t[index_t].reshape(-1, 1)
+                timestep = self.t[index_t].reshape(-1, 1).to(device)
 
                 noise = torch.randn_like(x_0)
 
                 x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
 
                 score = self.forward_transformer(x_1, timestep, condition_mask_batch)
-                loss = self.loss_fn(score, timestep, noise)
+                loss = self.loss_fn(score, timestep, noise, condition_mask_batch)
                 loss_epoch += loss.item()
 
                 loss.backward()
@@ -224,12 +254,13 @@ class ModelTransfuser(nn.Module):
 
             # Validation set if provided
             if val_data is not None:
+                val_data_normed = self.normalize(val_data)
                 val_loss = 0
                 if condition_mask_val is None:
                     # If no condition mask is provided, then validate on all data points
-                    condition_mask_val = torch.zeros_like(val_data).to(device)
+                    condition_mask_val = torch.zeros_like(val_data_normed).to(device)
 
-                x_0 = val_data.to(device)
+                x_0 = val_data_normed.to(device)
                 index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
 
                 timestep = self.t[index_t].reshape(-1, 1).to(device)
@@ -237,7 +268,7 @@ class ModelTransfuser(nn.Module):
 
                 x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
                 score = self.forward_transformer(x_1, timestep, condition_mask_val)
-                val_loss = self.loss_fn(score, timestep, noise).item()
+                val_loss = self.loss_fn(score, timestep, noise, condition_mask_val).item()
                 
                 self.val_loss.append(val_loss)
 
@@ -255,28 +286,49 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Sample ///////////
 
-    def sample(self, data, condition_mask, num_samples=1_000):
-        x = data.repeat(num_samples, 1)
-        condition_mask_samples = condition_mask.repeat(num_samples, 1)
-        dt = 1/self.timesteps
-        #self.x_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
-        #self.score_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
-        #self.dx_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1])
-
-        #self.x_t[:, 0] = x
+    def sample(self, data, condition_mask, num_samples=1_000, device="cpu"):
+        # Shaping
+        # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
+        if len(data.shape) == 1:
+            data = data.unsqueeze(0)
+        if len(condition_mask.shape) == 1:
+            condition_mask = condition_mask.unsqueeze(0)
         
-        for i, t in tqdm.tqdm(enumerate(reversed(self.t)), total=self.timesteps):
-            timestep = t.reshape(-1, 1)
-            score = self.forward_transformer(x, timestep, condition_mask_samples).squeeze(-1)
-            dx = 1/2 * self.sigma**(2*timestep)* score * dt
-            x = x - dx * (1-condition_mask)
-            x = x.detach()
+        self.to(device)
 
-            #self.x_t[:, i+1] = x
-            #self.dx_t[:, i] = dx
-            #self.score_t[:, i] = score
+        # Normalize data
+        data_normed = self.normalize(data)
 
-        #self.x_t = x_t
-        #self.score_t = score_t
+        #x = data_normed.repeat(num_samples, 1)
+        x = data_normed.unsqueeze(1).repeat(1,num_samples,1).to(device)
+        condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
+        dt = (1/self.timesteps)
         
-        return x
+        for n in tqdm.tqdm(range(len(data))):
+
+
+            for t in reversed(self.t):
+                timestep = t.reshape(-1, 1).to(device)
+                
+                score = self.forward_transformer(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
+                dx = 1/2 * self.sigma**(2*timestep)* score * dt
+                x[n,:] = x[n,:] - dx * (1-condition_mask_samples[n,:])
+                x[n,:] = x[n,:].detach()
+            
+        # Denormalize data
+        x = x * (self.std + 1e-6) + self.mean
+
+        return x.detach()
+    
+    # ------------------------------------
+    # /////////// Save & Load ///////////
+
+    def save(self, path):
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path):
+        with open(path, 'rb') as f:
+            model = pickle.load(f)
+        return model
