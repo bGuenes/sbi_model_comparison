@@ -143,6 +143,7 @@ class ModelTransfuser(nn.Module):
     # /////////// Forward pass ///////////
     # Predict the score for the given input data 
 
+
     def forward_transformer(self, x, timestep, condition_mask, edge_mask=None):
 
         # --- Reshape input ---
@@ -236,7 +237,7 @@ class ModelTransfuser(nn.Module):
                 condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
 
                 # Pick random timesteps in diffusion process
-                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
+                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
                 timestep = self.t[index_t].reshape(-1, 1).to(device)
 
                 noise = torch.randn_like(x_0)
@@ -249,28 +250,35 @@ class ModelTransfuser(nn.Module):
 
                 loss.backward()
                 optimizer.step()
+                
             
             self.train_loss.append(loss_epoch)
+            torch.cuda.empty_cache()
 
             # Validation set if provided
             if val_data is not None:
                 val_data_normed = self.normalize(val_data)
-                val_loss = 0
+
                 if condition_mask_val is None:
                     # If no condition mask is provided, then validate on all data points
                     condition_mask_val = torch.zeros_like(val_data_normed).to(device)
 
-                x_0 = val_data_normed.to(device)
-                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],)).to(device)
+                batch_size_val = 1000
+                val_loss = 0
+                for i in range(0, val_data_normed.shape[0], batch_size_val):
+                    x_0 = val_data_normed[i:i+batch_size_val].to(device)
+                    condition_mask_val_batch = condition_mask_val[i:i+batch_size_val].to(device)
+                    index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
 
-                timestep = self.t[index_t].reshape(-1, 1).to(device)
-                noise = torch.randn_like(x_0)
+                    timestep = self.t[index_t].reshape(-1, 1).to(device)
+                    noise = torch.randn_like(x_0)
 
-                x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
-                score = self.forward_transformer(x_1, timestep, condition_mask_val)
-                val_loss = self.loss_fn(score, timestep, noise, condition_mask_val).item()
-                
+                    x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
+                    score = self.forward_transformer(x_1, timestep, condition_mask_val_batch)
+                    val_loss += self.loss_fn(score, timestep, noise, condition_mask_val_batch).item()
+                    
                 self.val_loss.append(val_loss)
+                torch.cuda.empty_cache()
 
                 print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
                 print()
@@ -287,6 +295,7 @@ class ModelTransfuser(nn.Module):
     # /////////// Sample ///////////
 
     def sample(self, data, condition_mask, num_samples=1_000, device="cpu"):
+
         # Shaping
         # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
         if len(data.shape) == 1:
@@ -306,17 +315,16 @@ class ModelTransfuser(nn.Module):
         
         for n in tqdm.tqdm(range(len(data))):
 
-
             for t in reversed(self.t):
                 timestep = t.reshape(-1, 1).to(device)
                 
                 score = self.forward_transformer(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
                 dx = 1/2 * self.sigma**(2*timestep)* score * dt
-                x[n,:] = x[n,:] - dx * (1-condition_mask_samples[n,:])
-                x[n,:] = x[n,:].detach()
+
+                x[n,:] -= dx * (1-condition_mask_samples[n,:])
             
         # Denormalize data
-        x = x * (self.std + 1e-6) + self.mean
+        x = x * (self.std.to(device) + 1e-6) + self.mean.to(device)
 
         return x.detach()
     

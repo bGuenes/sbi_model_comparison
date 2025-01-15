@@ -73,9 +73,9 @@ ModelTransfuser.set_normalization(train_data)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=10)
+ModelTransfuser.train(train_data, val_data=val_data, epochs=50, device="cuda")
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_t50_normed.pickle")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_cudaTest.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -85,4 +85,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('ModelTransfuser_train_loss_normed.png')
+plt.savefig('ModelTransfuser_train_loss_cudaTest.png')
