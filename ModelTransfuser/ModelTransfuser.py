@@ -109,7 +109,7 @@ class ModelTransfuser(nn.Module):
         if noise is None:
             noise = torch.randn_like(x_0)
 
-        std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
+        std = self.sde.marginal_prob_std(t).reshape(-1, 1)
         x_1 = x_0 + std * noise
         return x_1
     
@@ -122,8 +122,8 @@ class ModelTransfuser(nn.Module):
         """
         Compute and set normalization parameters (mean and std) from the dataset.
         """
-        self.mean = data.mean(dim=0, keepdim=True).to(data.device)
-        self.std = data.std(dim=0, keepdim=True).to(data.device)
+        self.mean = data.mean(dim=0, keepdim=True)
+        self.std = data.std(dim=0, keepdim=True)
         print(f"Normalization parameters set.")
 
     def normalize(self, x):
@@ -136,13 +136,12 @@ class ModelTransfuser(nn.Module):
 
     
     def output_scale_function(self, t, x):
-        scale = self.sde.marginal_prob_std(t).to(x.device)
+        scale = self.sde.marginal_prob_std(t)
         return x / scale.unsqueeze(1)
     
     # ------------------------------------
     # /////////// Forward pass ///////////
     # Predict the score for the given input data 
-
 
     def forward_transformer(self, x, timestep, condition_mask, edge_mask=None):
 
@@ -150,8 +149,8 @@ class ModelTransfuser(nn.Module):
         # shaping data in the form of (batch_size, sequence_length, values)
         batch_size, seq_len = x.shape
         x = x.reshape(batch_size, seq_len, 1)
-        condition_mask = condition_mask.reshape(x.shape).to(x.device)
-        batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0)).to(x.device)
+        condition_mask = condition_mask.reshape(x.shape)
+        batch_node_ids = self.node_ids.repeat_interleave(batch_size).reshape(batch_size, -1)
 
         # --- Embedding ---
         # Time embedding
@@ -193,9 +192,9 @@ class ModelTransfuser(nn.Module):
         The target is the noise added to the data at a specific timestep 
         Meaning the prediction is the approximation of the noise added to the data
         '''
-        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1).to(pred.device)
-        noise = noise.unsqueeze(2).to(pred.device)
-        condition_mask = condition_mask.unsqueeze(2).to(pred.device)
+        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1)
+        noise = noise.unsqueeze(2)
+        condition_mask = condition_mask.unsqueeze(2)
 
         loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(noise-sigma_t*pred)**2))
 
@@ -207,7 +206,9 @@ class ModelTransfuser(nn.Module):
     def train(self, data, condition_mask_data=None, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None):
         start_time = time.time()
 
-        self.to(device)
+        self = self.to(device)
+        self.node_ids = self.node_ids.to(device)
+        self.t = self.t.to(device)
 
         # Define the optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
@@ -220,25 +221,36 @@ class ModelTransfuser(nn.Module):
             condition_mask_random = torch.distributions.bernoulli.Bernoulli(torch.ones_like(data) * 0.33)
 
         # Normalize data
-        data_normed = self.normalize(data)
+        data_normed = self.normalize(data).to(device)
+
+        time_1 = 0
+        time_2 = 0
+        time_2a = 0
+        time_3 = 0
+        time_4 = 0
+        time_5 = 0
+        time_6 = 0
 
         # Training loop
         for epoch in range(epochs):
             
-            loss_epoch = 0
+            loss_epoch = torch.tensor([0.], device=device)
 
             if condition_mask_data is None:
                 condition_mask_data = condition_mask_random.sample()
+            condition_mask_data = condition_mask_data.to(device)
 
-            for i in tqdm.tqdm(range(0, data_normed.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
+            idx = torch.randperm(data_normed.nelement())
+            data_normed_shuffled = data_normed.view(-1)[idx].view(data_normed.size())
+
+            for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
                 optimizer.zero_grad()
-
-                x_0 = data_normed[i:i+batch_size].to(device)
-                condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
+                
+                x_0 = data_normed_shuffled[i:i+batch_size]
+                condition_mask_batch = condition_mask_data[i:i+batch_size]
 
                 # Pick random timesteps in diffusion process
-                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
-                timestep = self.t[index_t].reshape(-1, 1).to(device)
+                timestep = self.t[self.t.multinomial(x_0.shape[0], replacement=True)].reshape(-1,1)
 
                 noise = torch.randn_like(x_0)
 
@@ -246,50 +258,58 @@ class ModelTransfuser(nn.Module):
 
                 score = self.forward_transformer(x_1, timestep, condition_mask_batch)
                 loss = self.loss_fn(score, timestep, noise, condition_mask_batch)
-                loss_epoch += loss.item()
-
+                loss_epoch += loss
+                
                 loss.backward()
                 optimizer.step()
                 
-            
             self.train_loss.append(loss_epoch)
-            torch.cuda.empty_cache()
 
             # Validation set if provided
             if val_data is not None:
-                val_data_normed = self.normalize(val_data)
+                val_data_normed = self.normalize(val_data).to(device)
 
                 if condition_mask_val is None:
                     # If no condition mask is provided, then validate on all data points
                     condition_mask_val = torch.zeros_like(val_data_normed).to(device)
+                condition_mask_val = condition_mask_val.to(device)
 
                 batch_size_val = 1000
-                val_loss = 0
+                val_loss = torch.tensor([0.], device=device)
+
                 for i in range(0, val_data_normed.shape[0], batch_size_val):
-                    x_0 = val_data_normed[i:i+batch_size_val].to(device)
-                    condition_mask_val_batch = condition_mask_val[i:i+batch_size_val].to(device)
+
+                    x_0 = val_data_normed[i:i+batch_size_val]
+                    condition_mask_val_batch = condition_mask_val[i:i+batch_size_val]
                     index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
 
-                    timestep = self.t[index_t].reshape(-1, 1).to(device)
+                    timestep = self.t[index_t].reshape(-1, 1)
                     noise = torch.randn_like(x_0)
 
                     x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
                     score = self.forward_transformer(x_1, timestep, condition_mask_val_batch)
-                    val_loss += self.loss_fn(score, timestep, noise, condition_mask_val_batch).item()
+                    val_loss += self.loss_fn(score, timestep, noise, condition_mask_val_batch)
                     
                 self.val_loss.append(val_loss)
-                torch.cuda.empty_cache()
 
-                print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
+                print(f'--- Training Loss: {loss_epoch.item():{""}{11}.3f} --- Validation Loss: {val_loss.item():{""}{11}.3f} ---')
                 print()
 
             else:
-                print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
+                print(f'--- Training Loss: {loss_epoch.item():{""}{11}.3f} ---')
                 print()
         
         end_time = time.time()
         time_elapsed = (end_time - start_time) / 60
         print(f"Training finished after {time_elapsed:.1f} minutes")
+
+        print(f"Time 1: {time_1:.2f} s")
+        print(f"Time 2: {time_2:.2f} s")
+        print(f"Time 2a: {time_2a:.2f} s")
+        print(f"Time 3: {time_3:.2f} s")
+        print(f"Time 4: {time_4:.2f} s")
+        print(f"Time 5: {time_5:.2f} s")
+        print(f"Time 6: {time_6:.2f} s")
 
     # ------------------------------------
     # /////////// Sample ///////////

@@ -73,7 +73,7 @@ ModelTransfuser.set_normalization(train_data)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=50, device="cuda")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:1")
 
 ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_cudaTest.pickle")
 
