@@ -1,6 +1,7 @@
 from ModelTransfuser.ModelTransfuser import *
 import matplotlib.pyplot as plt
 
+from scipy.stats import norm
 import numpy as np
 import torch
 import os
@@ -53,8 +54,20 @@ train_y = torch.tensor(train_y, dtype=torch.float32)
 val_x = torch.tensor(val_x, dtype=torch.float32)
 val_y = torch.tensor(val_y, dtype=torch.float32)
 
-train_data = torch.cat((train_x, train_y), 1)
-val_data = torch.cat((val_x, val_y), 1)
+# --- add noise ---
+pc_ab = 5 # percentage error in abundance
+
+train_y_err = torch.ones_like(train_y)*float(pc_ab)/100.
+train_y = norm.rvs(loc=train_y,scale=train_y_err)
+train_y = torch.tensor(train_y).float()
+
+val_y_err = torch.ones_like(val_y)*float(pc_ab)/100.
+val_y = norm.rvs(loc=val_y,scale=val_y_err)
+val_y = torch.tensor(val_y).float()
+
+# --- Concatenate the data ---
+train_data = torch.cat((train_x, train_y), 1)[:45000]
+val_data = torch.cat((val_x, val_y), 1)[:45000]
 
 
 # -------------------------------------
@@ -73,9 +86,9 @@ ModelTransfuser.set_normalization(train_data)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:1")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=10, device="cuda:0")
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_cudaTest.pickle")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_t10.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -85,4 +98,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('ModelTransfuser_train_loss_cudaTest.png')
+plt.savefig('ModelTransfuser_train_loss_t10.png')
