@@ -1,3 +1,5 @@
 ModelTransfuser/plots/
 ModelTransfuser/src/
 ModelTransfuser/data/
+*.png
+plots/*.png

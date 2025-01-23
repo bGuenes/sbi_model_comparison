@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Transformer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import numpy as np
 
@@ -69,7 +70,7 @@ class ModelTransfuser(nn.Module):
     # /////////// Initialization ///////////
     # Initialize the ModelTransfuser model
 
-    def __init__(self, timesteps, data_shape, sde_type="vesde", sigma=25.0, dim_value=10, dim_id=10, dim_condition=10, dim_time=20):
+    def __init__(self, timesteps, data_shape, sde_type="vesde", sigma=25.0, dim_value=20, dim_id=20, dim_condition=20, dim_time=64):
         super(ModelTransfuser, self).__init__()
 
         # Time steps in the diffusion process
@@ -96,7 +97,7 @@ class ModelTransfuser(nn.Module):
         self.condition_embedding = nn.Parameter(torch.randn(1, 1, dim_condition) * 0.5)  # Learnable condition embedding
 
         # Transformer model
-        self.transformer = Transformer(d_model=dim_value + dim_id + dim_condition + dim_time, nhead=2, num_encoder_layers=2, num_decoder_layers=2)
+        self.transformer = Transformer(d_model=dim_value + dim_id + dim_condition + dim_time, nhead=2, num_encoder_layers=2, num_decoder_layers=2, batch_first=True)
 
         # Output linear layer
         self.output_layer = nn.Linear(dim_value + dim_id + dim_condition + dim_time, 1)
@@ -104,14 +105,14 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Helper functions ///////////
 
-    def forward_diffusion_sample(self, x_0, t, noise=None):
+    def forward_diffusion_sample(self, x_0, t, x_1=None):
         # Diffusion process for time t with defined SDE
-        if noise is None:
-            noise = torch.randn_like(x_0)
+        if x_1 is None:
+            x_1 = torch.randn_like(x_0)
 
         std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
-        x_1 = x_0 + std * noise
-        return x_1
+        x_t = x_0 + std * x_1
+        return x_t
     
     def embedding_net_value(self, x):
         # Value embedding net (here we just repeat the value)
@@ -130,10 +131,10 @@ class ModelTransfuser(nn.Module):
         """
         Normalize input data using the stored mean and std.
         """
-        if self.mean is None or self.std is None:
+        try:
+            return (x - self.mean) / (self.std + 1e-6)  # Add epsilon to avoid division by zero
+        except:
             raise ValueError("Normalization parameters are not set. Use `set_normalization` first.")
-        return (x - self.mean) / (self.std + 1e-6)  # Add epsilon to avoid division by zero
-
     
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
@@ -182,22 +183,21 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Loss function ///////////
 
-    def loss_fn(self, pred, timestep, noise, condition_mask):
+    def loss_fn(self, score, timestep, x_1, condition_mask):
         '''
         Loss function for the score prediction task
 
         Args:
-            pred: Predicted score
-            target: Target score
+            score: Predicted score
                     
         The target is the noise added to the data at a specific timestep 
         Meaning the prediction is the approximation of the noise added to the data
         '''
-        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1).to(pred.device)
-        noise = noise.unsqueeze(2).to(pred.device)
-        condition_mask = condition_mask.unsqueeze(2).to(pred.device)
+        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1).to(score.device)
+        x_1 = x_1.unsqueeze(2).to(score.device)
+        condition_mask = condition_mask.unsqueeze(2).to(score.device)
 
-        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(noise-sigma_t*pred)**2))
+        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1-sigma_t*score)**2))
 
         return loss
     
@@ -210,14 +210,18 @@ class ModelTransfuser(nn.Module):
         self.to(device)
 
         # Define the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.1)
+        scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=500)
         self.train_loss = []
         self.val_loss = []
 
         if condition_mask_data is None:
         # If no condition mask is provided, eg to just train posterior or likelihood
         # the condition mask is sampled randomly over all data points to be able to predict the likelihood or posterior and also be able to work with missing data
-            condition_mask_random = torch.distributions.bernoulli.Bernoulli(torch.ones_like(data) * 0.33)
+            condition_mask_random_data = torch.distributions.bernoulli.Bernoulli(torch.ones_like(data) * 0.33)
+
+        if condition_mask_val is None and val_data is not None:
+            condition_mask_random_val = torch.distributions.bernoulli.Bernoulli(torch.ones_like(val_data) * 0.33)
 
         # Normalize data
         data_normed = self.normalize(data)
@@ -230,9 +234,10 @@ class ModelTransfuser(nn.Module):
             loss_epoch = 0
 
             if condition_mask_data is None:
-                condition_mask_data = condition_mask_random.sample()
+                condition_mask_data = condition_mask_random_data.sample()
 
             for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
+            #for i in tqdm.tqdm(range(0, 100, batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
                 optimizer.zero_grad()
 
                 x_0 = data_normed_shuffled[i:i+batch_size].to(device)
@@ -242,12 +247,12 @@ class ModelTransfuser(nn.Module):
                 index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
                 timestep = self.t[index_t].reshape(-1, 1).to(device)
 
-                noise = torch.randn_like(x_0)
+                x_1 = torch.randn_like(x_0)
 
-                x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
+                x_t = self.forward_diffusion_sample(x_0, timestep, x_1)
 
-                score = self.forward_transformer(x_1, timestep, condition_mask_batch)
-                loss = self.loss_fn(score, timestep, noise, condition_mask_batch)
+                score = self.forward_transformer(x_t, timestep, condition_mask_batch)
+                loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
                 loss_epoch += loss.item()
 
                 loss.backward()
@@ -255,15 +260,15 @@ class ModelTransfuser(nn.Module):
                 
             
             self.train_loss.append(loss_epoch)
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
 
             # Validation set if provided
             if val_data is not None:
                 val_data_normed = self.normalize(val_data)
 
                 if condition_mask_val is None:
-                    # If no condition mask is provided, then validate on all data points
-                    condition_mask_val = torch.zeros_like(val_data_normed).to(device)
+                    # If no condition mask is provided, val on random condition mask
+                    condition_mask_val = condition_mask_random_val.sample()
 
                 batch_size_val = 1000
                 val_loss = 0
@@ -280,12 +285,15 @@ class ModelTransfuser(nn.Module):
                     val_loss += self.loss_fn(score, timestep, noise, condition_mask_val_batch).item()
                     
                 self.val_loss.append(val_loss)
-                torch.cuda.empty_cache()
+                scheduler.step(val_loss)
+                #print(scheduler.get_last_lr())
+                #torch.cuda.empty_cache()
 
                 print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
                 print()
 
             else:
+                scheduler.step(loss_epoch)
                 print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
                 print()
         

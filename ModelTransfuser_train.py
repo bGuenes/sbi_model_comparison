@@ -66,8 +66,8 @@ val_y = norm.rvs(loc=val_y,scale=val_y_err)
 val_y = torch.tensor(val_y).float()
 
 # --- Concatenate the data ---
-train_data = torch.cat((train_x, train_y), 1)[:45000]
-val_data = torch.cat((val_x, val_y), 1)[:45000]
+train_data = torch.cat((train_x, train_y), 1)
+val_data = torch.cat((val_x, val_y), 1)
 
 
 # -------------------------------------
@@ -76,19 +76,19 @@ val_data = torch.cat((val_x, val_y), 1)[:45000]
 # Define the ModelTransfuser
 
 # Time steps for the diffusion process
-T = 50
+T = 20
 t = torch.linspace(0, 1, T)
 
-ModelTransfuser = ModelTransfuser(T, train_data.shape)
+ModelTransfuser = ModelTransfuser(T, train_data.shape, sigma=1.01)
 
 ModelTransfuser.set_normalization(train_data)
 
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=10, device="cuda:0")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:1")
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_t10.pickle")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_e100_s101_lr.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -98,4 +98,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('ModelTransfuser_train_loss_t10.png')
+plt.savefig('plots/ModelTransfuser_train_loss_e100_s101_lr.png')
