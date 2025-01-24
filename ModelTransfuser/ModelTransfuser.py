@@ -197,9 +197,10 @@ class ModelTransfuser(nn.Module):
         x_1 = x_1.unsqueeze(2).to(score.device)
         condition_mask = condition_mask.unsqueeze(2).to(score.device)
 
-        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1-sigma_t*score)**2))
+        #loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1-sigma_t*score)**2))
+        loss = 0.5*sigma_t**2 * torch.pow((1-condition_mask)*(x_1+(-sigma_t*score)), 2).mean(-1)
 
-        return loss
+        return loss.mean()
     
     # ------------------------------------
     # /////////// Training ///////////
@@ -210,8 +211,8 @@ class ModelTransfuser(nn.Module):
         self.to(device)
 
         # Define the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.1)
-        scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=500)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+        scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=1)
         self.train_loss = []
         self.val_loss = []
 
@@ -224,12 +225,13 @@ class ModelTransfuser(nn.Module):
             condition_mask_random_val = torch.distributions.bernoulli.Bernoulli(torch.ones_like(val_data) * 0.33)
 
         # Normalize data
-        data_normed = self.normalize(data)
+        #data_normed = self.normalize(data)
+        data_normed = data
 
         # Training loop
         for epoch in range(epochs):
-            idx = torch.randperm(data_normed.nelement())
-            data_normed_shuffled = data_normed.view(-1)[idx].view(data_normed.size())
+            idx = torch.randperm(data_normed.shape[0])
+            data_normed_shuffled = data_normed[idx,:]
 
             loss_epoch = 0
 
@@ -264,7 +266,8 @@ class ModelTransfuser(nn.Module):
 
             # Validation set if provided
             if val_data is not None:
-                val_data_normed = self.normalize(val_data)
+                #val_data_normed = self.normalize(val_data)
+                val_data_normed = val_data
 
                 if condition_mask_val is None:
                     # If no condition mask is provided, val on random condition mask
@@ -311,30 +314,45 @@ class ModelTransfuser(nn.Module):
         if len(data.shape) == 1:
             data = data.unsqueeze(0)
         if len(condition_mask.shape) == 1:
-            condition_mask = condition_mask.unsqueeze(0)
-        
+            condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
+
+        joint_data = torch.zeros_like(condition_mask)
+        joint_data[condition_mask==1] = data.flatten()
+
         self.to(device)
 
         # Normalize data
-        data_normed = self.normalize(data)
-
-        #x = data_normed.repeat(num_samples, 1)
+        #data_normed = self.normalize(joint_data) * condition_mask
+        data_normed = joint_data
+        
         x = data_normed.unsqueeze(1).repeat(1,num_samples,1).to(device)
+        random_t1_samples = torch.randn_like(x) * (1-condition_mask.to(device))
+        x += random_t1_samples
+
         condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
         dt = (1/self.timesteps)
+
+        self.x_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1], x.shape[2])
+        self.score_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1], x.shape[2])
+        self.dx_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1], x.shape[2])
+        self.x_t[:,0,:,:] = x
         
         for n in tqdm.tqdm(range(len(data))):
 
-            for t in reversed(self.t):
+            for i,t in enumerate(reversed(self.t)):
                 timestep = t.reshape(-1, 1).to(device)
                 
                 score = self.forward_transformer(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
-                dx = 1/2 * self.sigma**(2*timestep)* score * dt
+                dx = 0.5 * self.sigma**(timestep)* score * dt
 
                 x[n,:] -= dx * (1-condition_mask_samples[n,:])
+
+                self.x_t[n,i+1] = x[n,:] #* (self.std.to(device) + 1e-6) + self.mean.to(device)
+                self.dx_t[n,i] = dx
+                self.score_t[n,i] = score
             
         # Denormalize data
-        x = x * (self.std.to(device) + 1e-6) + self.mean.to(device)
+        x = x #* (self.std.to(device) + 1e-6) + self.mean.to(device)
 
         return x.detach()
     
