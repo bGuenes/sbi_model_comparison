@@ -105,20 +105,24 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Helper functions ///////////
 
-    def forward_diffusion_sample(self, x_0, t, x_1=None):
+    def forward_diffusion_sample(self, x_0, t, x_1=None, condition_mask=None):
         # Diffusion process for time t with defined SDE
         if x_1 is None:
             x_1 = torch.randn_like(x_0)
 
+        if condition_mask is None:
+            condition_mask = torch.zeros_like(x_0)
+
         std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
-        x_t = x_0 + std * x_1
+        x_t = x_0 + std * x_1 * (1-condition_mask)
         return x_t
     
     def embedding_net_value(self, x):
         # Value embedding net (here we just repeat the value)
-        dim_value=self.dim_value
-        return x.repeat(1,1,dim_value)
+        #dim_value=self.dim_value
+        return x.repeat(1,1,self.dim_value)
     
+
     def set_normalization(self, data):
         """
         Compute and set normalization parameters (mean and std) from the dataset.
@@ -135,6 +139,7 @@ class ModelTransfuser(nn.Module):
             return (x - self.mean) / (self.std + 1e-6)  # Add epsilon to avoid division by zero
         except:
             raise ValueError("Normalization parameters are not set. Use `set_normalization` first.")
+    
     
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
@@ -162,7 +167,7 @@ class ModelTransfuser(nn.Module):
         # Node ID embedding
         id_embedded = self.embedding_net_id(batch_node_ids)
         # Condition embedding
-        condition_embedded = self.condition_embedding * condition_mask
+        condition_embedded = self.condition_embedding * (1-condition_mask)
         
         # --- Create Token ---
         # Concatenate all embeddings to create the input for the Transformer
@@ -197,10 +202,11 @@ class ModelTransfuser(nn.Module):
         x_1 = x_1.unsqueeze(2).to(score.device)
         condition_mask = condition_mask.unsqueeze(2).to(score.device)
 
-        #loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1-sigma_t*score)**2))
-        loss = 0.5*sigma_t**2 * torch.pow((1-condition_mask)*(x_1+(-sigma_t*score)), 2).mean(-1)
+        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1-sigma_t*score)**2))
+        #loss = torch.mean(torch.sum((1-condition_mask)*(sigma_t*score+x_1)**2))
+        #loss = 0.5*sigma_t**2 * torch.pow((1-condition_mask)*(x_1+(-sigma_t*score)), 2).mean(-1).mean()
 
-        return loss.mean()
+        return loss
     
     # ------------------------------------
     # /////////// Training ///////////
@@ -232,6 +238,7 @@ class ModelTransfuser(nn.Module):
         for epoch in range(epochs):
             idx = torch.randperm(data_normed.shape[0])
             data_normed_shuffled = data_normed[idx,:]
+            #data_normed_shuffled = data
 
             loss_epoch = 0
 
@@ -249,9 +256,10 @@ class ModelTransfuser(nn.Module):
                 index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
                 timestep = self.t[index_t].reshape(-1, 1).to(device)
 
-                x_1 = torch.randn_like(x_0)
+                #x_1 = torch.randn_like(x_0)
+                x_1 = self.sigma*torch.randn_like(x_0)*(1-condition_mask_batch)+(condition_mask_batch)*x_0
 
-                x_t = self.forward_diffusion_sample(x_0, timestep, x_1)
+                x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
 
                 score = self.forward_transformer(x_t, timestep, condition_mask_batch)
                 loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
@@ -281,11 +289,13 @@ class ModelTransfuser(nn.Module):
                     index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
 
                     timestep = self.t[index_t].reshape(-1, 1).to(device)
-                    noise = torch.randn_like(x_0)
+                    #noise = torch.randn_like(x_0)
 
-                    x_1 = self.forward_diffusion_sample(x_0, timestep, noise)
+                    x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch)+(condition_mask_val_batch)*x_0
+
+                    x_t = self.forward_diffusion_sample(x_0, timestep, x_1)
                     score = self.forward_transformer(x_1, timestep, condition_mask_val_batch)
-                    val_loss += self.loss_fn(score, timestep, noise, condition_mask_val_batch).item()
+                    val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
                     
                 self.val_loss.append(val_loss)
                 scheduler.step(val_loss)
@@ -326,7 +336,7 @@ class ModelTransfuser(nn.Module):
         data_normed = joint_data
         
         x = data_normed.unsqueeze(1).repeat(1,num_samples,1).to(device)
-        random_t1_samples = torch.randn_like(x) * (1-condition_mask.to(device))
+        random_t1_samples = self.sigma*torch.randn_like(x) * (1-condition_mask.to(device))
         x += random_t1_samples
 
         condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
@@ -343,16 +353,16 @@ class ModelTransfuser(nn.Module):
                 timestep = t.reshape(-1, 1).to(device)
                 
                 score = self.forward_transformer(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
-                dx = 0.5 * self.sigma**(timestep)* score * dt
+                dx = 0.5 * self.sigma**(2*timestep)* score * dt
 
-                x[n,:] -= dx * (1-condition_mask_samples[n,:])
+                x[n,:] = x[n,:] - dx * (1-condition_mask_samples[n,:])
 
                 self.x_t[n,i+1] = x[n,:] #* (self.std.to(device) + 1e-6) + self.mean.to(device)
                 self.dx_t[n,i] = dx
                 self.score_t[n,i] = score
             
         # Denormalize data
-        x = x #* (self.std.to(device) + 1e-6) + self.mean.to(device)
+        #x = x #* (self.std.to(device) + 1e-6) + self.mean.to(device)
 
         return x.detach()
     

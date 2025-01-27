@@ -79,14 +79,14 @@ val_data = torch.cat((val_x, val_y), 1)
 T = 20
 t = torch.linspace(0, 1, T)
 
-ModelTransfuser = ModelTransfuser(T, train_data.shape, sigma=1.01)
+ModelTransfuser = ModelTransfuser(T, train_data.shape)
 
 #ModelTransfuser.set_normalization(train_data)
 
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=10, device="cuda:1")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=10, device="cuda:1", condition_mask_data=torch.zeros_like(train_data), condition_mask_val=torch.zeros_like(val_data))
 
 ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_e100_s101_lr_10000data.pickle")
 
