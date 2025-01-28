@@ -70,12 +70,12 @@ class ModelTransfuser(nn.Module):
     # /////////// Initialization ///////////
     # Initialize the ModelTransfuser model
 
-    def __init__(self, timesteps, data_shape, sde_type="vesde", sigma=25.0, dim_value=20, dim_id=20, dim_condition=20, dim_time=64):
+    def __init__(self, data_shape, sde_type="vesde", sigma=25.0, dim_value=20, dim_id=20, dim_condition=20, dim_time=64):
         super(ModelTransfuser, self).__init__()
 
         # Time steps in the diffusion process
-        self.timesteps = timesteps
-        self.t = torch.linspace(0, 1, self.timesteps)
+        #self.timesteps = timesteps
+        #self.t = torch.linspace(0, 1, self.timesteps)
         self.sigma = sigma
 
         # initialize SDE
@@ -107,11 +107,12 @@ class ModelTransfuser(nn.Module):
 
     def forward_diffusion_sample(self, x_0, t, x_1=None, condition_mask=None):
         # Diffusion process for time t with defined SDE
-        if x_1 is None:
-            x_1 = torch.randn_like(x_0)
-
+        
         if condition_mask is None:
             condition_mask = torch.zeros_like(x_0)
+
+        if x_1 is None:
+            x_1 = torch.randn_like(x_0)*(1-condition_mask)+(condition_mask)*x_0
 
         std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
         x_t = x_0 + std * x_1 * (1-condition_mask)
@@ -122,7 +123,6 @@ class ModelTransfuser(nn.Module):
         #dim_value=self.dim_value
         return x.repeat(1,1,self.dim_value)
     
-
     def set_normalization(self, data):
         """
         Compute and set normalization parameters (mean and std) from the dataset.
@@ -139,7 +139,6 @@ class ModelTransfuser(nn.Module):
             return (x - self.mean) / (self.std + 1e-6)  # Add epsilon to avoid division by zero
         except:
             raise ValueError("Normalization parameters are not set. Use `set_normalization` first.")
-    
     
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
@@ -167,7 +166,7 @@ class ModelTransfuser(nn.Module):
         # Node ID embedding
         id_embedded = self.embedding_net_id(batch_node_ids)
         # Condition embedding
-        condition_embedded = self.condition_embedding * (1-condition_mask)
+        condition_embedded = self.condition_embedding * condition_mask
         
         # --- Create Token ---
         # Concatenate all embeddings to create the input for the Transformer
@@ -182,6 +181,9 @@ class ModelTransfuser(nn.Module):
         # --- Output decoding ---
         # Score estimate output layer
         out = self.output_layer(transformer_output)
+
+        # Normalize output
+        out = self.output_scale_function(timestep, out)
 
         return out
     
@@ -202,7 +204,7 @@ class ModelTransfuser(nn.Module):
         x_1 = x_1.unsqueeze(2).to(score.device)
         condition_mask = condition_mask.unsqueeze(2).to(score.device)
 
-        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1-sigma_t*score)**2))
+        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1+sigma_t*score)**2))
         #loss = torch.mean(torch.sum((1-condition_mask)*(sigma_t*score+x_1)**2))
         #loss = 0.5*sigma_t**2 * torch.pow((1-condition_mask)*(x_1+(-sigma_t*score)), 2).mean(-1).mean()
 
@@ -215,9 +217,10 @@ class ModelTransfuser(nn.Module):
         start_time = time.time()
 
         self.to(device)
+        eps = 1e-6
 
         # Define the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=1)
         self.train_loss = []
         self.val_loss = []
@@ -246,18 +249,18 @@ class ModelTransfuser(nn.Module):
                 condition_mask_data = condition_mask_random_data.sample()
 
             for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
-            #for i in tqdm.tqdm(range(0, 100, batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
                 optimizer.zero_grad()
 
                 x_0 = data_normed_shuffled[i:i+batch_size].to(device)
                 condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
 
                 # Pick random timesteps in diffusion process
-                index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
-                timestep = self.t[index_t].reshape(-1, 1).to(device)
+                #index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
+                #timestep = self.t[index_t].reshape(-1, 1).to(device) * (1. - eps) + eps
+                timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps
 
                 #x_1 = torch.randn_like(x_0)
-                x_1 = self.sigma*torch.randn_like(x_0)*(1-condition_mask_batch)+(condition_mask_batch)*x_0
+                x_1 = torch.randn_like(x_0)*(1-condition_mask_batch)+(condition_mask_batch)*x_0
 
                 x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
 
@@ -286,15 +289,16 @@ class ModelTransfuser(nn.Module):
                 for i in range(0, val_data_normed.shape[0], batch_size_val):
                     x_0 = val_data_normed[i:i+batch_size_val].to(device)
                     condition_mask_val_batch = condition_mask_val[i:i+batch_size_val].to(device)
-                    index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
 
-                    timestep = self.t[index_t].reshape(-1, 1).to(device)
+                    #index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
+                    #timestep = self.t[index_t].reshape(-1, 1).to(device) * (1. - eps) + eps
+                    timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps
                     #noise = torch.randn_like(x_0)
 
                     x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch)+(condition_mask_val_batch)*x_0
 
-                    x_t = self.forward_diffusion_sample(x_0, timestep, x_1)
-                    score = self.forward_transformer(x_1, timestep, condition_mask_val_batch)
+                    x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_val_batch)
+                    score = self.forward_transformer(x_t, timestep, condition_mask_val_batch)
                     val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
                     
                 self.val_loss.append(val_loss)
@@ -317,7 +321,7 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Sample ///////////
 
-    def sample(self, data, condition_mask, num_samples=1_000, device="cpu"):
+    def sample(self, data, condition_mask, timesteps=50, num_samples=1_000, device="cpu"):
 
         # Shaping
         # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
@@ -336,26 +340,29 @@ class ModelTransfuser(nn.Module):
         data_normed = joint_data
         
         x = data_normed.unsqueeze(1).repeat(1,num_samples,1).to(device)
-        random_t1_samples = self.sigma*torch.randn_like(x) * (1-condition_mask.to(device))
+        random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) *torch.randn_like(x) * (1-condition_mask.to(device))
         x += random_t1_samples
 
         condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
-        dt = (1/self.timesteps)
+        
+        dt = (1/timesteps)
+        eps = 1e-3
+        time_steps = torch.linspace(1., eps, timesteps, device=device)
 
-        self.x_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1], x.shape[2])
-        self.score_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1], x.shape[2])
-        self.dx_t = torch.zeros(x.shape[0], self.timesteps+1, x.shape[1], x.shape[2])
+        self.x_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
+        self.score_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
+        self.dx_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
         self.x_t[:,0,:,:] = x
         
         for n in tqdm.tqdm(range(len(data))):
 
-            for i,t in enumerate(reversed(self.t)):
-                timestep = t.reshape(-1, 1).to(device)
+            for i,t in enumerate(time_steps):
+                timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
                 
                 score = self.forward_transformer(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
-                dx = 0.5 * self.sigma**(2*timestep)* score * dt
+                dx = self.sigma**(2*timestep)* score * dt
 
-                x[n,:] = x[n,:] - dx * (1-condition_mask_samples[n,:])
+                x[n,:] = x[n,:] + dx * (1-condition_mask_samples[n,:])
 
                 self.x_t[n,i+1] = x[n,:] #* (self.std.to(device) + 1e-6) + self.mean.to(device)
                 self.dx_t[n,i] = dx
