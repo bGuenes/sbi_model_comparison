@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Transformer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import schedulefree
 
 import numpy as np
 
@@ -220,7 +221,8 @@ class ModelTransfuser(nn.Module):
         eps = 1e-6
 
         # Define the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        #optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        optimizer = schedulefree.AdamWScheduleFree(self.parameters(), lr=lr)
         scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=1)
         self.train_loss = []
         self.val_loss = []
@@ -234,11 +236,14 @@ class ModelTransfuser(nn.Module):
             condition_mask_random_val = torch.distributions.bernoulli.Bernoulli(torch.ones_like(val_data) * 0.33)
 
         # Normalize data
+        #if not hasattr(self, 'mean') and not hasattr(self, 'std'):
+        #    self.set_normalization(data)
         #data_normed = self.normalize(data)
         data_normed = data
 
         # Training loop
         for epoch in range(epochs):
+            optimizer.train()
             idx = torch.randperm(data_normed.shape[0])
             data_normed_shuffled = data_normed[idx,:]
             #data_normed_shuffled = data
@@ -277,6 +282,7 @@ class ModelTransfuser(nn.Module):
 
             # Validation set if provided
             if val_data is not None:
+                optimizer.eval()
                 #val_data_normed = self.normalize(val_data)
                 val_data_normed = val_data
 
@@ -330,6 +336,8 @@ class ModelTransfuser(nn.Module):
         if len(condition_mask.shape) == 1:
             condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
 
+        self.timesteps = timesteps
+
         joint_data = torch.zeros_like(condition_mask)
         joint_data[condition_mask==1] = data.flatten()
 
@@ -369,7 +377,7 @@ class ModelTransfuser(nn.Module):
                 self.score_t[n,i] = score
             
         # Denormalize data
-        #x = x #* (self.std.to(device) + 1e-6) + self.mean.to(device)
+        #x = x * (self.std.to(device) + 1e-6) + self.mean.to(device)
 
         return x.detach()
     
