@@ -223,7 +223,7 @@ class ModelTransfuser(nn.Module):
         # Define the optimizer
         #optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         optimizer = schedulefree.AdamWScheduleFree(self.parameters(), lr=lr)
-        scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=1)
+        #scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=1)
         self.train_loss = []
         self.val_loss = []
 
@@ -308,7 +308,7 @@ class ModelTransfuser(nn.Module):
                     val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
                     
                 self.val_loss.append(val_loss)
-                scheduler.step(val_loss)
+                #scheduler.step(val_loss)
                 #print(scheduler.get_last_lr())
                 #torch.cuda.empty_cache()
 
@@ -316,7 +316,7 @@ class ModelTransfuser(nn.Module):
                 print()
 
             else:
-                scheduler.step(loss_epoch)
+                #scheduler.step(loss_epoch)
                 print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
                 print()
         
