@@ -69,17 +69,25 @@ class VPSDE():
 class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Initialization ///////////
-    # Initialize the ModelTransfuser model
 
-    def __init__(self, data_shape, sde_type="vesde", sigma=25.0, dim_value=20, dim_id=20, dim_condition=20, dim_time=64):
+    def __init__(
+            self,
+            data_shape, 
+            sde_type="vesde",
+            sigma=25.0,
+            dim_value=20,
+            dim_id=20,
+            dim_condition=20, 
+            dim_time=64,
+            nhead=2,
+            num_encoder_layers=2,
+            num_decoder_layers=2, 
+            dim_feedforward=2048,):
+        
         super(ModelTransfuser, self).__init__()
 
-        # Time steps in the diffusion process
-        #self.timesteps = timesteps
-        #self.t = torch.linspace(0, 1, self.timesteps)
-        self.sigma = sigma
-
         # initialize SDE
+        self.sigma = sigma
         if sde_type == "vesde":
             self.sde = VESDE(sigma=self.sigma)
         elif sde_type == "vpsde":
@@ -97,8 +105,12 @@ class ModelTransfuser(nn.Module):
         self.embedding_net_id = nn.Embedding(self.nodes_max, dim_id)  # Embedding for node IDs
         self.condition_embedding = nn.Parameter(torch.randn(1, 1, dim_condition) * 0.5)  # Learnable condition embedding
 
+        # Ensure the sum of dimensions is divisible by nhead
+        total_dim = dim_value + dim_id + dim_condition + dim_time
+        assert total_dim % nhead == 0, "Total dimension must be divisible by nhead\nTotal dim: {}\nnhead: {}".format(total_dim, nhead)
+
         # Transformer model
-        self.transformer = Transformer(d_model=dim_value + dim_id + dim_condition + dim_time, nhead=2, num_encoder_layers=2, num_decoder_layers=2, batch_first=True)
+        self.transformer = Transformer(d_model=total_dim, nhead=nhead, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers, batch_first=True, dim_feedforward=dim_feedforward)
 
         # Output linear layer
         self.output_layer = nn.Linear(dim_value + dim_id + dim_condition + dim_time, 1)
@@ -157,7 +169,8 @@ class ModelTransfuser(nn.Module):
         batch_size, seq_len = x.shape
         x = x.reshape(batch_size, seq_len, 1)
         condition_mask = condition_mask.reshape(x.shape).to(x.device)
-        batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0)).to(x.device)
+        #batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0)).to(x.device)
+        batch_node_ids = self.node_ids.repeat(batch_size,1).to(x.device)
 
         # --- Embedding ---
         # Time embedding
@@ -214,7 +227,7 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
-    def train(self, data, condition_mask_data=None, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None):
+    def train(self, data, condition_mask_data=None, batch_size=32, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None, verbose=True):
         start_time = time.time()
 
         self.to(device)
@@ -252,8 +265,8 @@ class ModelTransfuser(nn.Module):
 
             if condition_mask_data is None:
                 condition_mask_data = condition_mask_random_data.sample()
-
-            for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: '):
+            
+            for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: ', disable=not verbose):
                 optimizer.zero_grad()
 
                 x_0 = data_normed_shuffled[i:i+batch_size].to(device)
@@ -312,10 +325,11 @@ class ModelTransfuser(nn.Module):
                 #print(scheduler.get_last_lr())
                 #torch.cuda.empty_cache()
 
-                print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
-                print()
+                if verbose:
+                    print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
+                    print()
 
-            else:
+            elif verbose:
                 #scheduler.step(loss_epoch)
                 print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
                 print()

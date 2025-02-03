@@ -78,19 +78,19 @@ val_data = torch.cat((val_x, val_y), 1)
 # Time steps for the diffusion process
 #t = torch.linspace(0, 1)
 
-ModelTransfuser = ModelTransfuser(train_data.shape, sigma=25)
+ModelTransfuser = ModelTransfuser(train_data.shape, sigma=25, nhead=31, num_encoder_layers=8, num_decoder_layers=5)
 
 #ModelTransfuser.set_normalization(train_data)
 
 # -------------------------------------
 # Train
 
-mask = torch.zeros_like(val_data[0])
-mask[6:] = 1
+#mask = torch.zeros_like(val_data[0])
+#mask[6:] = 1
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:1")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=500, device="cuda:2")
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test_normed.pickle")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -100,4 +100,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('plots/ModelTransfuser_train_loss_test_normed.png')
+plt.savefig('plots/ModelTransfuser_train_loss_test.png')
