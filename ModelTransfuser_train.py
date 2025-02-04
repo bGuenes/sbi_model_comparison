@@ -10,7 +10,7 @@ import os
 # Load data
 
 # --- Load in training data ---
-path_training = os.getcwd() + '/ModelTransfuser/data/chempy_TNG_train_data.npz'
+path_training = os.getcwd() + '/ModelTransfuser/data/chempy_train_uniform_prior.npz'
 training_data = np.load(path_training, mmap_mode='r')
 
 elements = training_data['elements']
@@ -66,7 +66,7 @@ val_y = norm.rvs(loc=val_y,scale=val_y_err)
 val_y = torch.tensor(val_y).float()
 
 # --- Concatenate the data ---
-train_data = torch.cat((train_x, train_y), 1)[:10_000]
+train_data = torch.cat((train_x, train_y), 1)
 val_data = torch.cat((val_x, val_y), 1)
 
 
@@ -78,7 +78,7 @@ val_data = torch.cat((val_x, val_y), 1)
 # Time steps for the diffusion process
 #t = torch.linspace(0, 1)
 
-ModelTransfuser = ModelTransfuser(train_data.shape, sigma=25, nhead=31, num_encoder_layers=8, num_decoder_layers=5)
+ModelTransfuser = ModelTransfuser(train_data.shape, sigma=10)
 
 #ModelTransfuser.set_normalization(train_data)
 
@@ -88,9 +88,9 @@ ModelTransfuser = ModelTransfuser(train_data.shape, sigma=25, nhead=31, num_enco
 #mask = torch.zeros_like(val_data[0])
 #mask[6:] = 1
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=500, device="cuda:2")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:3")
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test.pickle")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test_uni.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -100,4 +100,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('plots/ModelTransfuser_train_loss_test.png')
+plt.savefig('plots/ModelTransfuser_train_loss_test_uni.png')
