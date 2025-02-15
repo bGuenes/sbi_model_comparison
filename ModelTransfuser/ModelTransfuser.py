@@ -265,6 +265,8 @@ class ModelTransfuser(nn.Module):
 
             if condition_mask_data is None:
                 condition_mask_data = condition_mask_random_data.sample()
+            elif len(condition_mask_data.shape) == 1:
+                condition_mask_data = condition_mask_data.unsqueeze(0).repeat(data_normed.shape[0], 1)
             
             for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: ', disable=not verbose):
                 optimizer.zero_grad()
@@ -302,6 +304,8 @@ class ModelTransfuser(nn.Module):
                 if condition_mask_val is None:
                     # If no condition mask is provided, val on random condition mask
                     condition_mask_val = condition_mask_random_val.sample()
+                elif len(condition_mask_val.shape) == 1:
+                    condition_mask_val = condition_mask_val.unsqueeze(0).repeat(val_data_normed.shape[0], 1)
 
                 batch_size_val = 1000
                 val_loss = 0

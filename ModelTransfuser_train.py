@@ -10,7 +10,7 @@ import os
 # Load data
 
 # --- Load in training data ---
-path_training = os.getcwd() + '/ModelTransfuser/data/chempy_train_uniform_prior.npz'
+path_training = os.getcwd() + '/ModelTransfuser/data/chempy_train_uniform_prior_5sigma.npz'
 training_data = np.load(path_training, mmap_mode='r')
 
 elements = training_data['elements']
@@ -66,7 +66,7 @@ val_y = norm.rvs(loc=val_y,scale=val_y_err)
 val_y = torch.tensor(val_y).float()
 
 # --- Concatenate the data ---
-train_data = torch.cat((train_x, train_y), 1)
+train_data = torch.cat((train_x, train_y), 1)[:10_000]
 val_data = torch.cat((val_x, val_y), 1)
 
 
@@ -78,19 +78,19 @@ val_data = torch.cat((val_x, val_y), 1)
 # Time steps for the diffusion process
 #t = torch.linspace(0, 1)
 
-ModelTransfuser = ModelTransfuser(train_data.shape, sigma=10)
+ModelTransfuser = ModelTransfuser(train_data.shape, sigma=10, nhead=5, num_encoder_layers=4, num_decoder_layers=4, dim_time=60)
 
 #ModelTransfuser.set_normalization(train_data)
 
 # -------------------------------------
 # Train
 
-#mask = torch.zeros_like(val_data[0])
-#mask[6:] = 1
+mask = torch.zeros_like(val_data[0])
+mask[6:] = 1
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:3")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=50, device="cuda:5", condition_mask_data=mask, condition_mask_val=mask)
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test_uni.pickle")
+ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test_uni_masked.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
