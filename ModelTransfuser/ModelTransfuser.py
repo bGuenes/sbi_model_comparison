@@ -12,27 +12,7 @@ import sys
 import tqdm
 import time
 
-# --------------------------------------------------------------------------------------------------
-
-class GaussianFourierEmbedding(nn.Module):
-    """Gaussian Fourier embedding module. Mostly used to embed time.
-
-    Args:
-        embed_dim (int, optional): Output dimesion. Defaults to 64.
-    """
-    def __init__(self, embed_dim=64, scale=30.):
-        super().__init__()
-        self.embed_dim = embed_dim
-
-    def forward(self, x):
-        half_dim = self.embed_dim // 2 + 1
-        B = torch.randn(half_dim, x.shape[-1], device=x.device)
-        x = 2 * np.pi * torch.matmul(x, B.T)
-        term1 = torch.cos(x)
-        term2 = torch.sin(x)
-        out = torch.cat([term1, term2], dim=-1)
-        return out[..., : self.embed_dim]
-
+from DiTmodels import *
 
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
@@ -95,6 +75,8 @@ class ModelTransfuser(nn.Module):
         else:
             raise ValueError("Invalid SDE type")
 
+
+        # ... Move to extern .........................................................................
         # Gaussian Fourier Embedding for time embedding
         self.time_embedding = GaussianFourierEmbedding(dim_time)
 
@@ -114,6 +96,7 @@ class ModelTransfuser(nn.Module):
 
         # Output linear layer
         self.output_layer = nn.Linear(dim_value + dim_id + dim_condition + dim_time, 1)
+        # ............................................................................................
 
     # ------------------------------------
     # /////////// Helper functions ///////////
@@ -136,23 +119,6 @@ class ModelTransfuser(nn.Module):
         #dim_value=self.dim_value
         return x.repeat(1,1,self.dim_value)
     
-    def set_normalization(self, data):
-        """
-        Compute and set normalization parameters (mean and std) from the dataset.
-        """
-        self.mean = data.mean(dim=0, keepdim=True).to(data.device)
-        self.std = data.std(dim=0, keepdim=True).to(data.device)
-        print(f"Normalization parameters set.")
-
-    def normalize(self, x):
-        """
-        Normalize input data using the stored mean and std.
-        """
-        try:
-            return (x - self.mean) / (self.std + 1e-6)  # Add epsilon to avoid division by zero
-        except:
-            raise ValueError("Normalization parameters are not set. Use `set_normalization` first.")
-    
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
         return x / scale.unsqueeze(1)
@@ -161,7 +127,7 @@ class ModelTransfuser(nn.Module):
     # /////////// Forward pass ///////////
     # Predict the score for the given input data 
 
-
+    # ... Move to extern .........................................................................
     def forward_transformer(self, x, timestep, condition_mask, edge_mask=None):
 
         # --- Reshape input ---
@@ -200,6 +166,8 @@ class ModelTransfuser(nn.Module):
         out = self.output_scale_function(timestep, out)
 
         return out
+    # ............................................................................................
+
     
     # ------------------------------------
     # /////////// Loss function ///////////
@@ -227,6 +195,7 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
+    #@torch.compile
     def train(self, data, condition_mask_data=None, batch_size=32, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None, verbose=True):
         start_time = time.time()
 
@@ -236,7 +205,7 @@ class ModelTransfuser(nn.Module):
         # Define the optimizer
         #optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         optimizer = schedulefree.AdamWScheduleFree(self.parameters(), lr=lr)
-        #scheduler = ReduceLROnPlateau(optimizer, patience=5, threshold=1)
+
         self.train_loss = []
         self.val_loss = []
 
@@ -248,30 +217,24 @@ class ModelTransfuser(nn.Module):
         if condition_mask_val is None and val_data is not None:
             condition_mask_random_val = torch.distributions.bernoulli.Bernoulli(torch.ones_like(val_data) * 0.33)
 
-        # Normalize data
-        #if not hasattr(self, 'mean') and not hasattr(self, 'std'):
-        #    self.set_normalization(data)
-        #data_normed = self.normalize(data)
-        data_normed = data
-
         # Training loop
         for epoch in range(epochs):
+            self.train()
             optimizer.train()
-            idx = torch.randperm(data_normed.shape[0])
-            data_normed_shuffled = data_normed[idx,:]
-            #data_normed_shuffled = data
+            idx = torch.randperm(data.shape[0])
+            data_shuffled = data[idx,:]
 
             loss_epoch = 0
 
             if condition_mask_data is None:
                 condition_mask_data = condition_mask_random_data.sample()
             elif len(condition_mask_data.shape) == 1:
-                condition_mask_data = condition_mask_data.unsqueeze(0).repeat(data_normed.shape[0], 1)
+                condition_mask_data = condition_mask_data.unsqueeze(0).repeat(data.shape[0], 1)
             
-            for i in tqdm.tqdm(range(0, data_normed_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: ', disable=not verbose):
+            for i in tqdm.tqdm(range(0, data_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: ', disable=not verbose):
                 optimizer.zero_grad()
 
-                x_0 = data_normed_shuffled[i:i+batch_size].to(device)
+                x_0 = data_shuffled[i:i+batch_size].to(device)
                 condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
 
                 # Pick random timesteps in diffusion process
@@ -297,20 +260,19 @@ class ModelTransfuser(nn.Module):
 
             # Validation set if provided
             if val_data is not None:
+                self.eval()
                 optimizer.eval()
-                #val_data_normed = self.normalize(val_data)
-                val_data_normed = val_data
 
                 if condition_mask_val is None:
                     # If no condition mask is provided, val on random condition mask
                     condition_mask_val = condition_mask_random_val.sample()
                 elif len(condition_mask_val.shape) == 1:
-                    condition_mask_val = condition_mask_val.unsqueeze(0).repeat(val_data_normed.shape[0], 1)
+                    condition_mask_val = condition_mask_val.unsqueeze(0).repeat(val_data.shape[0], 1)
 
                 batch_size_val = 1000
                 val_loss = 0
-                for i in range(0, val_data_normed.shape[0], batch_size_val):
-                    x_0 = val_data_normed[i:i+batch_size_val].to(device)
+                for i in range(0, val_data.shape[0], batch_size_val):
+                    x_0 = val_data[i:i+batch_size_val].to(device)
                     condition_mask_val_batch = condition_mask_val[i:i+batch_size_val].to(device)
 
                     #index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
@@ -325,8 +287,6 @@ class ModelTransfuser(nn.Module):
                     val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
                     
                 self.val_loss.append(val_loss)
-                #scheduler.step(val_loss)
-                #print(scheduler.get_last_lr())
                 #torch.cuda.empty_cache()
 
                 if verbose:
@@ -334,7 +294,6 @@ class ModelTransfuser(nn.Module):
                     print()
 
             elif verbose:
-                #scheduler.step(loss_epoch)
                 print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
                 print()
         
@@ -361,11 +320,9 @@ class ModelTransfuser(nn.Module):
 
         self.to(device)
 
-        # Normalize data
-        #data_normed = self.normalize(joint_data) * condition_mask
-        data_normed = joint_data
+        data = joint_data
         
-        x = data_normed.unsqueeze(1).repeat(1,num_samples,1).to(device)
+        x = data.unsqueeze(1).repeat(1,num_samples,1).to(device)
         random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) *torch.randn_like(x) * (1-condition_mask.to(device))
         x += random_t1_samples
 
@@ -390,12 +347,9 @@ class ModelTransfuser(nn.Module):
 
                 x[n,:] = x[n,:] + dx * (1-condition_mask_samples[n,:])
 
-                self.x_t[n,i+1] = x[n,:] #* (self.std.to(device) + 1e-6) + self.mean.to(device)
+                self.x_t[n,i+1] = x[n,:]
                 self.dx_t[n,i] = dx
                 self.score_t[n,i] = score
-            
-        # Denormalize data
-        #x = x * (self.std.to(device) + 1e-6) + self.mean.to(device)
 
         return x.detach()
     

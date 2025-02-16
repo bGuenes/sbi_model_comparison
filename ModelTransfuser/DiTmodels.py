@@ -95,6 +95,57 @@ class LabelEmbedder(nn.Module):
         embeddings = self.embedding_table(labels)
         return embeddings
     
+class ConditionEmbedder(nn.Module):
+    """
+    Embeds conditioning information.
+    """
+    def __init__(self, nodes_size, hidden_size, dropout_prob):
+        super().__init__()
+        self.nodes_size = nodes_size
+        self.hidden_size = hidden_size
+        self.dropout_prob = dropout_prob
+
+        use_cfg_embedding = dropout_prob > 0
+        self.embedding_table = nn.Embedding(nodes_size + use_cfg_embedding, hidden_size)
+
+    def token_drop(self, labels, force_drop_ids=None):
+        """
+        Drops labels to enable classifier-free guidance.
+        """
+        if force_drop_ids is None:
+            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+        else:
+            drop_ids = force_drop_ids == 1
+        labels = torch.where(drop_ids, self.num_classes, labels)
+        return labels
+
+    def forward(self, t, y):
+        use_dropout = self.dropout_prob > 0
+        if (train and use_dropout) or (force_drop_ids is not None):
+            labels = self.token_drop(labels, force_drop_ids)
+        embeddings = self.embedding_table(labels)
+        return embeddings
+
+
+class GaussianFourierEmbedding(nn.Module):
+    """Gaussian Fourier embedding module. Mostly used to embed time.
+
+    Args:
+        embed_dim (int, optional): Output dimesion. Defaults to 64.
+    """
+    def __init__(self, embed_dim=64, scale=30.):
+        super().__init__()
+        self.embed_dim = embed_dim
+
+    def forward(self, x):
+        half_dim = self.embed_dim // 2 + 1
+        B = torch.randn(half_dim, x.shape[-1], device=x.device)
+        x = 2 * np.pi * torch.matmul(x, B.T)
+        term1 = torch.cos(x)
+        term2 = torch.sin(x)
+        out = torch.cat([term1, term2], dim=-1)
+        return out[..., : self.embed_dim]
+    
 
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -158,6 +209,7 @@ class DiTBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.qkv = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
         self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, **block_kwargs)   ##########################################################################################################################################################
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
@@ -170,7 +222,9 @@ class DiTBlock(nn.Module):
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        qkv = self.qkv(modulate(self.norm1(x), shift_msa, scale_msa))
+        q, k, v = qkv.unbind(dim=0)
+        x = x + gate_msa.unsqueeze(1) * self.attn(q, k, v)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -202,9 +256,8 @@ class DiT(nn.Module):
     def __init__(
         self,
         input_size=32,
-        in_channels=4,
         hidden_size=1152,
-        depth=28,
+        depth=6,
         num_heads=16,
         mlp_ratio=4.0,
         class_dropout_prob=0.1,
@@ -213,8 +266,6 @@ class DiT(nn.Module):
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
-        self.in_channels = in_channels
-        self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.num_heads = num_heads
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)   ##########################################################################################################################################################
@@ -292,54 +343,3 @@ class DiT(nn.Module):
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
-    
-
-    
-
-#################################################################################
-#                                   DiT Configs                                  #
-#################################################################################
-
-def DiT_XL_2(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
-
-def DiT_XL_4(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
-
-def DiT_XL_8(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
-
-def DiT_L_2(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
-
-def DiT_L_4(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
-
-def DiT_L_8(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
-
-def DiT_B_2(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
-
-def DiT_B_4(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
-
-def DiT_B_8(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=8, num_heads=12, **kwargs)
-
-def DiT_S_2(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
-
-def DiT_S_4(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
-
-def DiT_S_8(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
-
-
-DiT_models = {
-    'DiT-XL/2': DiT_XL_2,  'DiT-XL/4': DiT_XL_4,  'DiT-XL/8': DiT_XL_8,
-    'DiT-L/2':  DiT_L_2,   'DiT-L/4':  DiT_L_4,   'DiT-L/8':  DiT_L_8,
-    'DiT-B/2':  DiT_B_2,   'DiT-B/4':  DiT_B_4,   'DiT-B/8':  DiT_B_8,
-    'DiT-S/2':  DiT_S_2,   'DiT-S/4':  DiT_S_4,   'DiT-S/8':  DiT_S_8,
-}
