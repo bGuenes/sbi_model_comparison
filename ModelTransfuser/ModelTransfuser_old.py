@@ -12,7 +12,7 @@ import sys
 import tqdm
 import time
 
-from ModelTransfuser.DiTmodels import DiT
+from DiTmodels import *
 
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
@@ -52,19 +52,19 @@ class ModelTransfuser(nn.Module):
 
     def __init__(
             self,
-            nodes_size, 
+            data_shape, 
             sde_type="vesde",
             sigma=25.0,
-            hidden_size=512,
-            depth=6,
-            num_heads=16,
-            mlp_ratio=4.0,
-            class_dropout_prob=0.1,
-            ):
+            dim_value=20,
+            dim_id=20,
+            dim_condition=20, 
+            dim_time=64,
+            nhead=2,
+            num_encoder_layers=2,
+            num_decoder_layers=2, 
+            dim_feedforward=2048,):
         
         super(ModelTransfuser, self).__init__()
-
-        self.nodes_size = nodes_size
 
         # initialize SDE
         self.sigma = sigma
@@ -75,10 +75,28 @@ class ModelTransfuser(nn.Module):
         else:
             raise ValueError("Invalid SDE type")
 
-        # define model
-        self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
-                                       depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, 
-                                       class_dropout_prob=class_dropout_prob)
+
+        # ... Move to extern .........................................................................
+        # Gaussian Fourier Embedding for time embedding
+        self.time_embedding = GaussianFourierEmbedding(dim_time)
+
+        # Token embedding layers for values, node IDs, and condition masks
+        self.nodes_max = data_shape[1]  # Maximum number of nodes
+        self.node_ids = torch.arange(self.nodes_max)  # Node IDs
+        self.dim_value = dim_value
+        self.embedding_net_id = nn.Embedding(self.nodes_max, dim_id)  # Embedding for node IDs
+        self.condition_embedding = nn.Parameter(torch.randn(1, 1, dim_condition) * 0.5)  # Learnable condition embedding
+
+        # Ensure the sum of dimensions is divisible by nhead
+        total_dim = dim_value + dim_id + dim_condition + dim_time
+        assert total_dim % nhead == 0, "Total dimension must be divisible by nhead\nTotal dim: {}\nnhead: {}".format(total_dim, nhead)
+
+        # Transformer model
+        self.transformer = Transformer(d_model=total_dim, nhead=nhead, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers, batch_first=True, dim_feedforward=dim_feedforward)
+
+        # Output linear layer
+        self.output_layer = nn.Linear(dim_value + dim_id + dim_condition + dim_time, 1)
+        # ............................................................................................
 
     # ------------------------------------
     # /////////// Helper functions ///////////
@@ -103,8 +121,53 @@ class ModelTransfuser(nn.Module):
     
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
-        return x / scale
+        return x / scale.unsqueeze(1)
     
+    # ------------------------------------
+    # /////////// Forward pass ///////////
+    # Predict the score for the given input data 
+
+    # ... Move to extern .........................................................................
+    def forward_transformer(self, x, timestep, condition_mask, edge_mask=None):
+
+        # --- Reshape input ---
+        # shaping data in the form of (batch_size, sequence_length, values)
+        batch_size, seq_len = x.shape
+        x = x.reshape(batch_size, seq_len, 1)
+        condition_mask = condition_mask.reshape(x.shape).to(x.device)
+        #batch_node_ids = torch.tensor(np.repeat([self.node_ids], batch_size, axis=0)).to(x.device)
+        batch_node_ids = self.node_ids.repeat(batch_size,1).to(x.device)
+
+        # --- Embedding ---
+        # Time embedding
+        time_embedded = self.time_embedding(timestep).unsqueeze(1).expand(batch_size, seq_len, -1)
+        # Value embedding
+        value_embedded = self.embedding_net_value(x)
+        # Node ID embedding
+        id_embedded = self.embedding_net_id(batch_node_ids)
+        # Condition embedding
+        condition_embedded = self.condition_embedding * condition_mask
+        
+        # --- Create Token ---
+        # Concatenate all embeddings to create the input for the Transformer
+        x_encoded = torch.cat([value_embedded, id_embedded, condition_embedded, time_embedded], dim=-1)
+        x_encoded = x_encoded.permute(1, 0, 2)  # Transformer expects (seq_len, batch_size, d_model)
+
+        # --- Transformer ---
+        # Transformer forward pass
+        transformer_output = self.transformer(x_encoded, x_encoded)
+        transformer_output = transformer_output.permute(1, 0, 2)  # Reorder back to (batch_size, seq_len, d_model)
+
+        # --- Output decoding ---
+        # Score estimate output layer
+        out = self.output_layer(transformer_output)
+
+        # Normalize output
+        out = self.output_scale_function(timestep, out)
+
+        return out
+    # ............................................................................................
+
     
     # ------------------------------------
     # /////////// Loss function ///////////
@@ -122,15 +185,17 @@ class ModelTransfuser(nn.Module):
         sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1).to(score.device)
         x_1 = x_1.unsqueeze(2).to(score.device)
         condition_mask = condition_mask.unsqueeze(2).to(score.device)
-        score = score.unsqueeze(2)
 
         loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1+sigma_t*score)**2))
+        #loss = torch.mean(torch.sum((1-condition_mask)*(sigma_t*score+x_1)**2))
+        #loss = 0.5*sigma_t**2 * torch.pow((1-condition_mask)*(x_1+(-sigma_t*score)), 2).mean(-1).mean()
 
         return loss
     
     # ------------------------------------
     # /////////// Training ///////////
 
+    #@torch.compile
     def train(self, data, condition_mask_data=None, batch_size=32, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None, verbose=True):
         start_time = time.time()
 
@@ -154,7 +219,7 @@ class ModelTransfuser(nn.Module):
 
         # Training loop
         for epoch in range(epochs):
-            self.model.train()
+            self.train()
             optimizer.train()
             idx = torch.randperm(data.shape[0])
             data_shuffled = data[idx,:]
@@ -182,8 +247,7 @@ class ModelTransfuser(nn.Module):
 
                 x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
 
-                out = self.model(x_t, timestep, condition_mask_batch)
-                score = self.output_scale_function(timestep, out)
+                score = self.forward_transformer(x_t, timestep, condition_mask_batch)
                 loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
                 loss_epoch += loss.item()
 
@@ -196,7 +260,7 @@ class ModelTransfuser(nn.Module):
 
             # Validation set if provided
             if val_data is not None:
-                self.model.eval()
+                self.eval()
                 optimizer.eval()
 
                 if condition_mask_val is None:
@@ -219,8 +283,7 @@ class ModelTransfuser(nn.Module):
                     x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch)+(condition_mask_val_batch)*x_0
 
                     x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_val_batch)
-                    out = self.model(x_t, timestep, condition_mask_val_batch)
-                    score = self.output_scale_function(timestep, out)
+                    score = self.forward_transformer(x_t, timestep, condition_mask_val_batch)
                     val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
                     
                 self.val_loss.append(val_loss)
@@ -243,10 +306,6 @@ class ModelTransfuser(nn.Module):
 
     def sample(self, data, condition_mask, timesteps=50, num_samples=1_000, device="cpu"):
 
-        self.model.eval()
-        self.model.to(device)
-        #self.to(device)
-
         # Shaping
         # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
         if len(data.shape) == 1:
@@ -259,7 +318,7 @@ class ModelTransfuser(nn.Module):
         joint_data = torch.zeros_like(condition_mask)
         joint_data[condition_mask==1] = data.flatten()
 
-        
+        self.to(device)
 
         data = joint_data
         
@@ -283,8 +342,7 @@ class ModelTransfuser(nn.Module):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
                 
-                out = self.model(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
-                score = self.output_scale_function(timestep, out)
+                score = self.forward_transformer(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
                 dx = self.sigma**(2*timestep)* score * dt
 
                 x[n,:] = x[n,:] + dx * (1-condition_mask_samples[n,:])

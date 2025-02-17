@@ -19,12 +19,28 @@ import collections.abc
 
 
 def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x * (1 + scale) + shift
 
 
 #################################################################################
 #               Embedding Layers for Timesteps and Class Labels                 #
 #################################################################################
+
+class InputEmbedder(nn.Module):
+    """
+    Embeds joint data into vector representations.
+    """
+    def __init__(self, nodes_size, hidden_size):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(nodes_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+
+    def forward(self, x):
+        x = self.mlp(x)
+        return x
 
 class TimestepEmbedder(nn.Module):
     """
@@ -62,90 +78,29 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
-        t_emb = self.mlp(t_freq)
+        t_emb = self.mlp(t_freq).squeeze(1)
         return t_emb
 
-
-class LabelEmbedder(nn.Module):
-    """
-    Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
-    """
-    def __init__(self, num_classes, hidden_size, dropout_prob):
-        super().__init__()
-        use_cfg_embedding = dropout_prob > 0
-        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
-        self.num_classes = num_classes
-        self.dropout_prob = dropout_prob
-
-    def token_drop(self, labels, force_drop_ids=None):
-        """
-        Drops labels to enable classifier-free guidance.
-        """
-        if force_drop_ids is None:
-            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
-        else:
-            drop_ids = force_drop_ids == 1
-        labels = torch.where(drop_ids, self.num_classes, labels)
-        return labels
-
-    def forward(self, labels, train, force_drop_ids=None):
-        use_dropout = self.dropout_prob > 0
-        if (train and use_dropout) or (force_drop_ids is not None):
-            labels = self.token_drop(labels, force_drop_ids)
-        embeddings = self.embedding_table(labels)
-        return embeddings
     
 class ConditionEmbedder(nn.Module):
     """
     Embeds conditioning information.
+    Also handles label dropout for classifier-free guidance.
     """
-    def __init__(self, nodes_size, hidden_size, dropout_prob):
+    def __init__(self, nodes_size, hidden_size):
         super().__init__()
         self.nodes_size = nodes_size
         self.hidden_size = hidden_size
-        self.dropout_prob = dropout_prob
 
-        use_cfg_embedding = dropout_prob > 0
-        self.embedding_table = nn.Embedding(nodes_size + use_cfg_embedding, hidden_size)
+        self.mlp = nn.Sequential(
+            nn.Linear(nodes_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
 
-    def token_drop(self, labels, force_drop_ids=None):
-        """
-        Drops labels to enable classifier-free guidance.
-        """
-        if force_drop_ids is None:
-            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
-        else:
-            drop_ids = force_drop_ids == 1
-        labels = torch.where(drop_ids, self.num_classes, labels)
-        return labels
-
-    def forward(self, t, y):
-        use_dropout = self.dropout_prob > 0
-        if (train and use_dropout) or (force_drop_ids is not None):
-            labels = self.token_drop(labels, force_drop_ids)
-        embeddings = self.embedding_table(labels)
+    def forward(self, conditions):
+        embeddings = self.mlp(conditions)
         return embeddings
-
-
-class GaussianFourierEmbedding(nn.Module):
-    """Gaussian Fourier embedding module. Mostly used to embed time.
-
-    Args:
-        embed_dim (int, optional): Output dimesion. Defaults to 64.
-    """
-    def __init__(self, embed_dim=64, scale=30.):
-        super().__init__()
-        self.embed_dim = embed_dim
-
-    def forward(self, x):
-        half_dim = self.embed_dim // 2 + 1
-        B = torch.randn(half_dim, x.shape[-1], device=x.device)
-        x = 2 * np.pi * torch.matmul(x, B.T)
-        term1 = torch.cos(x)
-        term2 = torch.sin(x)
-        out = torch.cat([term1, term2], dim=-1)
-        return out[..., : self.embed_dim]
-    
 
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -221,11 +176,11 @@ class DiTBlock(nn.Module):
         )
 
     def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
         qkv = self.qkv(modulate(self.norm1(x), shift_msa, scale_msa))
-        q, k, v = qkv.unbind(dim=0)
-        x = x + gate_msa.unsqueeze(1) * self.attn(q, k, v)
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        q, k, v = qkv.chunk(3, dim=-1)
+        x = x + gate_msa * self.attn(q, k, v, need_weights=False)[0]
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
 
@@ -233,10 +188,10 @@ class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
-    def __init__(self, hidden_size, patch_size, out_channels):
+    def __init__(self, hidden_size, nodes_size):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.linear = nn.Linear(hidden_size, nodes_size, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
@@ -255,27 +210,25 @@ class DiT(nn.Module):
     """
     def __init__(
         self,
-        input_size=32,
-        hidden_size=1152,
+        nodes_size,
+        hidden_size=512,
         depth=6,
         num_heads=16,
         mlp_ratio=4.0,
         class_dropout_prob=0.1,
-        num_classes=1000,
-        learn_sigma=True,
     ):
         super().__init__()
-        self.learn_sigma = learn_sigma
+        self.nodes_size = nodes_size
         self.num_heads = num_heads
 
-        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)   ##########################################################################################################################################################
+        self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 ##########################################################################################################################################################
         self.t_embedder = TimestepEmbedder(hidden_size)                                             ##########################################################################################################################################################
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)               ##########################################################################################################################################################
+        self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               ##########################################################################################################################################################
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)                   ##########################################################################################################################################################
+        self.final_layer = FinalLayer(hidden_size, nodes_size)                   ##########################################################################################################################################################
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -287,13 +240,9 @@ class DiT(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
-        w = self.x_embedder.proj.weight.data
-        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        nn.init.constant_(self.x_embedder.proj.bias, 0)
-
         # Initialize label embedding table:
-        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        nn.init.normal_(self.c_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.c_embedder.mlp[2].weight, std=0.02)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -310,30 +259,30 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, c):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
-        y: (N,) tensor of class labels
+        c: (N,) tensor of data conditions (latent or conditioned)
         """
-        x = self.x_embedder(x)                   # (N, T, D), where T = H * W / patch_size ** 2
+        x = self.x_embedder(x)                   # (N, D)
         t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y, self.training)    # (N, D)
-        c = t + y                                # (N, D)
+        c = self.c_embedder(c)                   # (N, D)
+        c += t                                   # (N, D)
         for block in self.blocks:
-            x = block(x, c)                      # (N, T, D)
+            x = block(x, c)                      # (N, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         return x
 
-    def forward_with_cfg(self, x, t, y, cfg_scale):
+    def forward_with_cfg(self, x, t, c, cfg_scale):
         """
         Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
         """
         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t, y)
+        model_out = self.forward(combined, t, c)
         # For exact reproducibility reasons, we apply classifier-free guidance on only
         # three channels by default. The standard approach to cfg applies it to all channels.
         # This can be done by uncommenting the following line and commenting-out the line following that.
