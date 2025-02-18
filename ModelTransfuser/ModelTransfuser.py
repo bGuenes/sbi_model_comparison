@@ -131,11 +131,11 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
-    def train(self, data, condition_mask_data=None, batch_size=32, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None, verbose=True):
+    def train(self, data, condition_mask_data=None, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None, verbose=True):
         start_time = time.time()
 
         self.to(device)
-        eps = 1e-6
+        eps = 1e-3
 
         # Define the optimizer
         #optimizer = torch.optim.Adam(self.parameters(), lr=lr)
