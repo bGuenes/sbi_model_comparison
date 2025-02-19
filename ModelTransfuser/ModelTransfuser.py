@@ -126,6 +126,9 @@ class ModelTransfuser(nn.Module):
 
         loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1+sigma_t*score)**2))
 
+        if torch.isnan(loss).any():
+            print("NAN in loss")
+
         return loss
     
     # ------------------------------------

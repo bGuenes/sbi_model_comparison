@@ -181,6 +181,9 @@ class DiTBlock(nn.Module):
         q, k, v = qkv.chunk(3, dim=-1)
         x = x + gate_msa * self.attn(q, k, v, need_weights=False)[0]
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+
+        if torch.any(torch.isnan(x)) or torch.any(torch.isinf(x)):
+            raise ValueError("NaN or Inf in block output.")
         return x
 
 
@@ -224,6 +227,11 @@ class DiT(nn.Module):
         self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 ##########################################################################################################################################################
         self.t_embedder = TimestepEmbedder(hidden_size)                                             ##########################################################################################################################################################
         self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               ##########################################################################################################################################################
+
+        # Embedders should probably be nn.Embedding and not MLPs
+        # MLPs embed the data with dependencies between the inputs
+        # Embeddings are just a lookup table
+        # they should be independent before the model
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
@@ -270,9 +278,21 @@ class DiT(nn.Module):
         t = self.t_embedder(t)                   # (N, D)
         c = self.c_embedder(c)                   # (N, D)
         c += t                                   # (N, D)
+        if torch.any(torch.isnan(c)) or torch.any(torch.isinf(c)):
+            raise ValueError("NaN or Inf in conditioning data.")
+        
+        if torch.any(torch.isnan(x)) or torch.any(torch.isinf(x)):
+            raise ValueError("NaN or Inf in input data.")
+        
+        if torch.any(torch.isnan(t)) or torch.any(torch.isinf(t)):
+            raise ValueError("NaN or Inf in timestep data.")
+        
         for block in self.blocks:
             x = block(x, c)                      # (N, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
+
+        if torch.any(torch.isnan(x)) or torch.any(torch.isinf(x)):
+            raise ValueError("NaN or Inf in final layer output.")
         return x
 
     def forward_with_cfg(self, x, t, c, cfg_scale):
