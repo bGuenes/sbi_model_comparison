@@ -81,7 +81,7 @@ ModelTransfuser = ModelTransfuser(nodes_size)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=15, device="cuda:1")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=15, device="cuda:3")
 
 ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test_uni_new.pickle")
 

@@ -55,11 +55,10 @@ class ModelTransfuser(nn.Module):
             nodes_size, 
             sde_type="vesde",
             sigma=25.0,
-            hidden_size=512,
+            hidden_size=64,
             depth=6,
             num_heads=16,
             mlp_ratio=4.0,
-            class_dropout_prob=0.1,
             ):
         
         super(ModelTransfuser, self).__init__()
@@ -77,8 +76,7 @@ class ModelTransfuser(nn.Module):
 
         # define model
         self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
-                                       depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, 
-                                       class_dropout_prob=class_dropout_prob)
+                                       depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
     # ------------------------------------
     # /////////// Helper functions ///////////
@@ -287,7 +285,7 @@ class ModelTransfuser(nn.Module):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
                 
-                out = self.model(x[n,:], timestep, condition_mask_samples[n,:]).squeeze(-1).detach()
+                out = self.model(x[n,:], timestep, condition_mask_samples[n,:1]).squeeze(-1).detach()
                 score = self.output_scale_function(timestep, out)
                 dx = self.sigma**(2*timestep)* score * dt
 

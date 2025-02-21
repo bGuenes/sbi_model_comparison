@@ -32,26 +32,22 @@ class InputEmbedder(nn.Module):
     """
     def __init__(self, nodes_size, hidden_size):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(nodes_size, hidden_size, bias=True),
-            nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
-        )
+        self.embedding_params = nn.Parameter(torch.ones(1, nodes_size, hidden_size))
 
     def forward(self, x):
-        x = self.mlp(x)
+        x = x.unsqueeze(-1) * self.embedding_params
         return x
 
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
     """
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+    def __init__(self, nodes_size, hidden_size, frequency_embedding_size=256):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size, bias=True),
             nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
+            nn.Linear(hidden_size, nodes_size*hidden_size, bias=True),
         )
         self.frequency_embedding_size = frequency_embedding_size
 
@@ -81,7 +77,6 @@ class TimestepEmbedder(nn.Module):
         t_emb = self.mlp(t_freq).squeeze(1)
         return t_emb
 
-    
 class ConditionEmbedder(nn.Module):
     """
     Embeds conditioning information.
@@ -89,18 +84,12 @@ class ConditionEmbedder(nn.Module):
     """
     def __init__(self, nodes_size, hidden_size):
         super().__init__()
-        self.nodes_size = nodes_size
-        self.hidden_size = hidden_size
 
-        self.mlp = nn.Sequential(
-            nn.Linear(nodes_size, hidden_size, bias=True),
-            nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
-        )
+        self.embedding = nn.Embedding(nodes_size, hidden_size)
 
     def forward(self, conditions):
-        embeddings = self.mlp(conditions)
-        return embeddings
+        embeddings = self.embedding(conditions)
+        return embeddings.flatten(1)
 
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -161,29 +150,47 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, nodes_size, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.qkv = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
-        self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, **block_kwargs)   ##########################################################################################################################################################
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.hidden_size = hidden_size
+        self.nodes_size = nodes_size
+
+        self.norm1 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
+        self.qkv = nn.Linear(hidden_size, hidden_size, bias=True)
+
+        self.q_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
+        self.k_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
+        self.v_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
+
+        self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, **block_kwargs )   ##########################################################################################################################################################
+        self.norm2 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+            nn.Linear(nodes_size*hidden_size, 6 * nodes_size * hidden_size, bias=True)
         )
 
-    def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
-        qkv = self.qkv(modulate(self.norm1(x), shift_msa, scale_msa))
-        q, k, v = qkv.chunk(3, dim=-1)
-        x = x + gate_msa * self.attn(q, k, v, need_weights=False)[0]
+    def forward(self, x, c, t):
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).reshape(-1, self.nodes_size, 6*self.hidden_size).chunk(6, dim=-1)
+        #qkv = self.qkv(modulate(self.norm1(x), shift_msa, scale_msa))
+        x1 = modulate(self.norm1(x), shift_msa, scale_msa)#.flatten(1)
+
+        # q = self.q_mlp(x1)
+        # k = self.k_mlp(x1 * c.repeat_interleave(self.hidden_size, dim=-1))
+        # v = self.v_mlp(x1* (1-c.repeat_interleave(self.hidden_size, dim=-1)))
+
+        q, k, v = x1.repeat(1,1,3).chunk(3, dim=-1)
+        q = self.q_mlp(q) #.flatten(1)
+        k = k * c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1)
+        k = self.k_mlp(k) 
+        v = v * (1-c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1))
+        v = self.v_mlp(v) 
+
+        x = x + gate_msa * self.attn(q, k, v, need_weights=False)[0]#.reshape(-1, self.nodes_size, self.hidden_size)
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
-        if torch.any(torch.isnan(x)) or torch.any(torch.isinf(x)):
-            raise ValueError("NaN or Inf in block output.")
         return x
 
 
@@ -193,18 +200,24 @@ class FinalLayer(nn.Module):
     """
     def __init__(self, hidden_size, nodes_size):
         super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, nodes_size, bias=True)
+        self.hidden_size = hidden_size
+        self.nodes_size = nodes_size
+
+        self.norm_final = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
+        #self.linear = nn.Linear(hidden_size, nodes_size, bias=True)
+        self.embedding_params = nn.Parameter(torch.zeros(nodes_size*hidden_size, nodes_size))
+
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+            nn.Linear(nodes_size*hidden_size, 2 * nodes_size * hidden_size, bias=True)
         )
 
     def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
+        shift, scale = self.adaLN_modulation(c).reshape(-1, self.nodes_size, 2*self.hidden_size).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
-        x = self.linear(x)
-        return x
+        x = nn.SiLU()(x)
+        x = x.flatten(1) @ self.embedding_params
+        return x.squeeze(-1)
 
 
 class DiT(nn.Module):
@@ -214,18 +227,17 @@ class DiT(nn.Module):
     def __init__(
         self,
         nodes_size,
-        hidden_size=512,
+        hidden_size=64,
         depth=6,
         num_heads=16,
         mlp_ratio=4.0,
-        class_dropout_prob=0.1,
     ):
         super().__init__()
         self.nodes_size = nodes_size
         self.num_heads = num_heads
 
         self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 ##########################################################################################################################################################
-        self.t_embedder = TimestepEmbedder(hidden_size)                                             ##########################################################################################################################################################
+        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size)                                             ##########################################################################################################################################################
         self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               ##########################################################################################################################################################
 
         # Embedders should probably be nn.Embedding and not MLPs
@@ -234,7 +246,7 @@ class DiT(nn.Module):
         # they should be independent before the model
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
+            DiTBlock(hidden_size, num_heads, nodes_size, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, nodes_size)                   ##########################################################################################################################################################
         self.initialize_weights()
@@ -248,10 +260,6 @@ class DiT(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # Initialize label embedding table:
-        nn.init.normal_(self.c_embedder.mlp[0].weight, std=0.02)
-        nn.init.normal_(self.c_embedder.mlp[2].weight, std=0.02)
-
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
@@ -264,8 +272,8 @@ class DiT(nn.Module):
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.final_layer.linear.weight, 0)
-        nn.init.constant_(self.final_layer.linear.bias, 0)
+        # nn.init.constant_(self.final_layer.linear.weight, 0)
+        # nn.init.constant_(self.final_layer.linear.bias, 0)
 
     def forward(self, x, t, c):
         """
@@ -276,23 +284,14 @@ class DiT(nn.Module):
         """
         x = self.x_embedder(x)                   # (N, D)
         t = self.t_embedder(t)                   # (N, D)
-        c = self.c_embedder(c)                   # (N, D)
-        c += t                                   # (N, D)
-        if torch.any(torch.isnan(c)) or torch.any(torch.isinf(c)):
-            raise ValueError("NaN or Inf in conditioning data.")
-        
-        if torch.any(torch.isnan(x)) or torch.any(torch.isinf(x)):
-            raise ValueError("NaN or Inf in input data.")
-        
-        if torch.any(torch.isnan(t)) or torch.any(torch.isinf(t)):
-            raise ValueError("NaN or Inf in timestep data.")
-        
+        c_embed = self.c_embedder(c.type(torch.int))                   # (N, D)
+        t += c_embed                                   # (N, D)
+       
         for block in self.blocks:
-            x = block(x, c)                      # (N, D)
-        x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
+            x = block(x, c, t)                      # (N, D)
+        
+        x = self.final_layer(x, t)                # (N, T, patch_size ** 2 * out_channels)
 
-        if torch.any(torch.isnan(x)) or torch.any(torch.isinf(x)):
-            raise ValueError("NaN or Inf in final layer output.")
         return x
 
     def forward_with_cfg(self, x, t, c, cfg_scale):
