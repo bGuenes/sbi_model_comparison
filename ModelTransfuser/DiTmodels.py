@@ -156,7 +156,7 @@ class DiTBlock(nn.Module):
         self.nodes_size = nodes_size
 
         self.norm1 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
-        self.qkv = nn.Linear(hidden_size, hidden_size, bias=True)
+        #self.qkv = nn.Linear(hidden_size, hidden_size, bias=True)
 
         self.q_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
         self.k_mlp = nn.Linear(hidden_size, hidden_size, bias=True)

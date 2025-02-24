@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn import Transformer
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 import schedulefree
 
 import numpy as np
@@ -13,6 +11,7 @@ import tqdm
 import time
 
 from ModelTransfuser.DiTmodels import DiT
+from ModelTransfuser.transformer import Transformer
 
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
@@ -58,7 +57,7 @@ class ModelTransfuser(nn.Module):
             hidden_size=64,
             depth=6,
             num_heads=16,
-            mlp_ratio=4.0,
+            mlp_ratio=4,
             ):
         
         super(ModelTransfuser, self).__init__()
@@ -78,6 +77,9 @@ class ModelTransfuser(nn.Module):
         self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
                                        depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
+        # self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
+        #                          depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        
     # ------------------------------------
     # /////////// Helper functions ///////////
 
@@ -124,9 +126,6 @@ class ModelTransfuser(nn.Module):
 
         loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1+sigma_t*score)**2))
 
-        if torch.isnan(loss).any():
-            print("NAN in loss")
-
         return loss
     
     # ------------------------------------
@@ -136,6 +135,7 @@ class ModelTransfuser(nn.Module):
         start_time = time.time()
 
         self.to(device)
+        self.model.to(device)
         eps = 1e-3
 
         # Define the optimizer
@@ -183,13 +183,13 @@ class ModelTransfuser(nn.Module):
 
                 x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
 
-                out = self.model(x_t, timestep, condition_mask_batch)
+                out = self.model(x=x_t, t=timestep, c=condition_mask_batch)
                 score = self.output_scale_function(timestep, out)
                 loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
                 loss_epoch += loss.item()
 
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                #torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
                 
             
@@ -221,7 +221,7 @@ class ModelTransfuser(nn.Module):
                     x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch)+(condition_mask_val_batch)*x_0
 
                     x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_val_batch)
-                    out = self.model(x_t, timestep, condition_mask_val_batch)
+                    out = self.model(x=x_t, t=timestep, c=condition_mask_val_batch)
                     score = self.output_scale_function(timestep, out)
                     val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
                     
@@ -259,17 +259,17 @@ class ModelTransfuser(nn.Module):
         self.timesteps = timesteps
 
         joint_data = torch.zeros_like(condition_mask)
-        joint_data[condition_mask==1] = data.flatten()
+        if torch.sum(condition_mask==1).item()!=0:
+            joint_data[condition_mask==1] = data.flatten()
 
-        
+        condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
 
         data = joint_data
         
         x = data.unsqueeze(1).repeat(1,num_samples,1).to(device)
-        random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) *torch.randn_like(x) * (1-condition_mask.to(device))
+        random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) * torch.randn_like(x) * (1-condition_mask_samples.to(device))
         x += random_t1_samples
-
-        condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
+    
         
         dt = (1/timesteps)
         eps = 1e-3
@@ -285,7 +285,7 @@ class ModelTransfuser(nn.Module):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
                 
-                out = self.model(x[n,:], timestep, condition_mask_samples[n,:1]).squeeze(-1).detach()
+                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n,:1]).squeeze(-1).detach()
                 score = self.output_scale_function(timestep, out)
                 dx = self.sigma**(2*timestep)* score * dt
 
