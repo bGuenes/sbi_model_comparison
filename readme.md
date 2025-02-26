@@ -55,7 +55,7 @@ Step-by-step diffusion process with Variance Exploding SDE (VESDE): <br>
 
 Galactic Parameters           |  Chemical Abundances
 :-------------------------:|:-------------------------:
-![](plots/theta_to_noise.gif)  |  ![](plots/x_to_noise.gif)
+![](plots/Readme/theta_to_noise.gif)  |  ![](plots/Readme/x_to_noise.gif)
 
 ### Reversing the Diffusion Process
 Reversing the diffusion process is running the diffusion process backwards in time. 
@@ -156,7 +156,7 @@ These steps can be repeated to get a fully denoised sample $x_0$ at $t=0$. <br>
 
 Distribution Denoising | Single Sample Denoising
 :-------------------------:|:-------------------------:
-![](plots/test_big.gif) | ![](plots/test_quiver.gif)
+![](plots/Readme/test_big.gif) | ![](plots/Readme/test_quiver.gif)
 
 ### Conditining 
 In order to perfome inference, we need to tell the model which values are observed and which are latent. <br>

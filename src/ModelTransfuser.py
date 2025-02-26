@@ -10,8 +10,8 @@ import sys
 import tqdm
 import time
 
-from ModelTransfuser.DiTmodels import DiT
-from ModelTransfuser.transformer import Transformer
+from src.ConditionTransformer import DiT
+from src.Simformer import Transformer
 
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations

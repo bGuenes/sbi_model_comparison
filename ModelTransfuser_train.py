@@ -1,4 +1,4 @@
-from ModelTransfuser.ModelTransfuser import *
+from src.ModelTransfuser import *
 import matplotlib.pyplot as plt
 
 from scipy.stats import norm
@@ -10,7 +10,7 @@ import os
 # Load data
 
 # --- Load in training data ---
-path_training = os.getcwd() + '/ModelTransfuser/data/chempy_train_uniform_prior_5sigma.npz'
+path_training = os.getcwd() + '/data/Chempy_data/chempy_train_uniform_prior_5sigma.npz'
 training_data = np.load(path_training, mmap_mode='r')
 
 elements = training_data['elements']
@@ -19,7 +19,7 @@ train_y = training_data['abundances']
 
 
 # ---  Load in the validation data ---
-path_test = os.getcwd() + '/ModelTransfuser/data/chempy_TNG_val_data.npz'
+path_test = os.getcwd() + '/data/Chempy_data/chempy_TNG_val_data.npz'
 val_data = np.load(path_test, mmap_mode='r')
 
 val_x = val_data['params']
@@ -81,9 +81,9 @@ ModelTransfuser = ModelTransfuser(nodes_size)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:5")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=1, device="cuda:5")
 
-ModelTransfuser.save("ModelTransfuser/models/ModelTransfuser_test_uni_new.pickle")
+ModelTransfuser.save("data/models/ModelTransfuser_test_uni_new.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -93,4 +93,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('plots/ModelTransfuser_train_loss_test_uni_new.png')
+plt.savefig('plots/loss/ModelTransfuser_train_loss_test_uni_new.png')
