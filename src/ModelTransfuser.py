@@ -74,11 +74,11 @@ class ModelTransfuser(nn.Module):
             raise ValueError("Invalid SDE type")
 
         # define model
-        self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
-                                       depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        # self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
+        #                                depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
-        # self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
-        #                          depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
+                                 depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
         
     # ------------------------------------
     # /////////// Helper functions ///////////
@@ -285,7 +285,7 @@ class ModelTransfuser(nn.Module):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
                 
-                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n,:1]).squeeze(-1).detach()
+                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n,]).squeeze(-1).detach()
                 score = self.output_scale_function(timestep, out)
                 dx = self.sigma**(2*timestep)* score * dt
 

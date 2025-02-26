@@ -50,6 +50,7 @@ class TransformerBlock(nn.Module):
 
         self.norm1 = nn.LayerNorm(self.num_tokens)
         self.norm2 = nn.LayerNorm(self.num_tokens)
+        self.norm3 = nn.LayerNorm(self.num_tokens)
 
         self.context_embed = nn.Linear(1, self.num_tokens)
         self.mlp = nn.Sequential(
@@ -61,15 +62,15 @@ class TransformerBlock(nn.Module):
     def forward(self, x, t):
         x_norm = self.norm1(x)
         x_attn = self.attention(x_norm, x_norm, x_norm, need_weights=False)[0]
-        x = x + x_attn
 
-        x_norm = self.norm2(x)
+        x = self.norm2(x + x_attn)
+
+        x_mlp = self.mlp(x)
         t_embed = self.context_embed(t)
-        x_context_embed = x + t_embed
-        x_mlp = self.mlp(x_context_embed)
+        x_mlp = x + t_embed
 
-        x = x + x_mlp
-
+        x = self.norm3(x + x_mlp)
+        
         return x
 
 # --- Transformer ----------------------------------------------------------------------------------------------------

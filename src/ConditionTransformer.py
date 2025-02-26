@@ -158,15 +158,18 @@ class DiTBlock(nn.Module):
         self.norm1 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
         #self.qkv = nn.Linear(hidden_size, hidden_size, bias=True)
 
-        self.q_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
-        self.k_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
-        self.v_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
+        #self.q_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
+        #self.k_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
+        #self.v_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
 
-        self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, **block_kwargs )   ##########################################################################################################################################################
+        self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, **block_kwargs )  
+
         self.norm2 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
+
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(nodes_size*hidden_size, 6 * nodes_size * hidden_size, bias=True)
@@ -182,11 +185,11 @@ class DiTBlock(nn.Module):
         # v = self.v_mlp(x1* (1-c.repeat_interleave(self.hidden_size, dim=-1)))
 
         q, k, v = x1.repeat(1,1,3).chunk(3, dim=-1)
-        q = self.q_mlp(q) #.flatten(1)
-        k = k * c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1)
-        k = self.k_mlp(k) 
-        v = v * (1-c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1))
-        v = self.v_mlp(v) 
+        #q = self.q_mlp(q) #.flatten(1)
+        #k = k * c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1)
+        #k = self.k_mlp(k) 
+        #v = v * (1-c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1))
+        #v = self.v_mlp(v) 
 
         x = x + gate_msa * self.attn(q, k, v, need_weights=False)[0]#.reshape(-1, self.nodes_size, self.hidden_size)
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
@@ -236,9 +239,9 @@ class DiT(nn.Module):
         self.nodes_size = nodes_size
         self.num_heads = num_heads
 
-        self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 ##########################################################################################################################################################
-        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size)                                             ##########################################################################################################################################################
-        self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               ##########################################################################################################################################################
+        self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 
+        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size)                                             
+        self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               
 
         # Embedders should probably be nn.Embedding and not MLPs
         # MLPs embed the data with dependencies between the inputs
@@ -248,7 +251,7 @@ class DiT(nn.Module):
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, nodes_size, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.final_layer = FinalLayer(hidden_size, nodes_size)                   ##########################################################################################################################################################
+        self.final_layer = FinalLayer(hidden_size, nodes_size)                   
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -293,21 +296,3 @@ class DiT(nn.Module):
         x = self.final_layer(x, t)                # (N, T, patch_size ** 2 * out_channels)
 
         return x
-
-    def forward_with_cfg(self, x, t, c, cfg_scale):
-        """
-        Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
-        """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
-        half = x[: len(x) // 2]
-        combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t, c)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
-        eps, rest = model_out[:, :3], model_out[:, 3:]
-        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-        eps = torch.cat([half_eps, half_eps], dim=0)
-        return torch.cat([eps, rest], dim=1)
