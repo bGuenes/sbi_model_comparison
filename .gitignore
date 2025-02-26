@@ -1,6 +1,3 @@
-ModelTransfuser/plots/
-ModelTransfuser/src/
-ModelTransfuser/data/
-ModelTransfuser/models/
-plots/*.png
+data/Chempy_data/
+data/models/
 Chempy/
