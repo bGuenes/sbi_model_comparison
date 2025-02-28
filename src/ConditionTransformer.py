@@ -1,14 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# GLIDE: https://github.com/openai/glide-text2im
-# MAE: https://github.com/facebookresearch/mae/blob/main/models_mae.py
-# --------------------------------------------------------
-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -42,12 +31,12 @@ class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
     """
-    def __init__(self, nodes_size, hidden_size, frequency_embedding_size=256):
+    def __init__(self, nodes_size, hidden_size, mlp_ratio=4.0, frequency_embedding_size=256):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.Linear(frequency_embedding_size, mlp_ratio*hidden_size, bias=True),
             nn.SiLU(),
-            nn.Linear(hidden_size, nodes_size*hidden_size, bias=True),
+            nn.Linear(mlp_ratio*hidden_size, frequency_embedding_size, bias=True),
         )
         self.frequency_embedding_size = frequency_embedding_size
 
@@ -61,12 +50,14 @@ class TimestepEmbedder(nn.Module):
         :param max_period: controls the minimum frequency of the embeddings.
         :return: an (N, D) Tensor of positional embeddings.
         """
-        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+
         half = dim // 2
+
         freqs = torch.exp(
             -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
         ).to(device=t.device)
-        args = t[:, None].float() * freqs[None]
+
+        args = t * freqs
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
@@ -74,7 +65,7 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
-        t_emb = self.mlp(t_freq).squeeze(1)
+        t_emb = self.mlp(t_freq)
         return t_emb
 
 class ConditionEmbedder(nn.Module):
@@ -150,10 +141,11 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, nodes_size, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, nodes_size, mlp_ratio=4.0, time_embedding_size=256, **block_kwargs):
         super().__init__()
         self.hidden_size = hidden_size
         self.nodes_size = nodes_size
+        self.num_heads = num_heads
 
         self.norm1 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
         #self.qkv = nn.Linear(hidden_size, hidden_size, bias=True)
@@ -162,7 +154,7 @@ class DiTBlock(nn.Module):
         #self.k_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
         #self.v_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
 
-        self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, **block_kwargs )  
+        self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, batch_first=True, **block_kwargs )  
 
         self.norm2 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
 
@@ -172,7 +164,7 @@ class DiTBlock(nn.Module):
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(nodes_size*hidden_size, 6 * nodes_size * hidden_size, bias=True)
+            nn.Linear(time_embedding_size, 6 * nodes_size * hidden_size, bias=True)
         )
 
     def forward(self, x, c, t):
@@ -186,12 +178,14 @@ class DiTBlock(nn.Module):
 
         q, k, v = x1.repeat(1,1,3).chunk(3, dim=-1)
         #q = self.q_mlp(q) #.flatten(1)
-        k = k * c.unsqueeze(-1)
+        #k = k * c.unsqueeze(-1)
         #k = self.k_mlp(k) 
-        v = v * c.unsqueeze(-1)
+        #v = v * c.unsqueeze(-1)
         #v = self.v_mlp(v) 
 
-        x = x + c.unsqueeze(-1) * gate_msa * self.attn(q, k, v, need_weights=False)[0]#.reshape(-1, self.nodes_size, self.hidden_size)
+        attn_mask = (1-c).type(torch.bool).unsqueeze(1).repeat(self.num_heads, self.nodes_size, 1)
+
+        x = x + gate_msa * self.attn(q, k, v, need_weights=False, attn_mask=attn_mask)[0]
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
         return x
@@ -201,7 +195,7 @@ class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
-    def __init__(self, hidden_size, nodes_size):
+    def __init__(self, hidden_size, nodes_size, time_embedding_size=256):
         super().__init__()
         self.hidden_size = hidden_size
         self.nodes_size = nodes_size
@@ -212,11 +206,11 @@ class FinalLayer(nn.Module):
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(nodes_size*hidden_size, 2 * nodes_size * hidden_size, bias=True)
+            nn.Linear(time_embedding_size, 2 * nodes_size * hidden_size, bias=True)
         )
 
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).reshape(-1, self.nodes_size, 2*self.hidden_size).chunk(2, dim=-1)
+    def forward(self, x, t):
+        shift, scale = self.adaLN_modulation(t).reshape(-1, self.nodes_size, 2*self.hidden_size).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = nn.SiLU()(x)
         x = x.flatten(1) @ self.embedding_params
@@ -231,6 +225,7 @@ class DiT(nn.Module):
         self,
         nodes_size,
         hidden_size=64,
+        time_embedding_size=256,
         depth=6,
         num_heads=16,
         mlp_ratio=4.0,
@@ -238,9 +233,10 @@ class DiT(nn.Module):
         super().__init__()
         self.nodes_size = nodes_size
         self.num_heads = num_heads
+        self.time_embedding_size = time_embedding_size
 
         self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 
-        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size)                                             
+        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size, mlp_ratio=mlp_ratio, frequency_embedding_size=time_embedding_size)                                             
         self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               
 
         # Embedders should probably be nn.Embedding and not MLPs
@@ -285,14 +281,14 @@ class DiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         c: (N,) tensor of data conditions (latent or conditioned)
         """
-        x = self.x_embedder(x)                   # (N, D)
-        t = self.t_embedder(t)                   # (N, D)
-        c_embed = self.c_embedder(c.type(torch.int))                   # (N, D)
-        t += c_embed                                   # (N, D)
+        x = self.x_embedder(x)
+        t = self.t_embedder(t)
+        #c_embed = self.c_embedder(c.type(torch.int))
+        #t += c_embed
        
         for block in self.blocks:
-            x = block(x, c, t)                      # (N, D)
+            x = block(x, c, t)
         
-        x = self.final_layer(x, t)                # (N, T, patch_size ** 2 * out_channels)
+        x = self.final_layer(x, t)
 
         return x

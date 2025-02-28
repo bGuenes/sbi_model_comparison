@@ -37,9 +37,27 @@ class InputEmbedder(nn.Module):
 
         return x_embed
 
+class GaussianFourierEmbedding(nn.Module):
+    """Gaussian Fourier embedding module. Mostly used to embed time.
+
+    Args:
+        embed_dim (int, optional): Output dimesion. Defaults to 64.
+    """
+    def __init__(self, embed_dim=64, scale=30.):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.B = nn.Parameter(torch.randn(embed_dim // 2, 1) * scale)
+
+    def forward(self, t):
+        t = 2 * torch.pi * torch.matmul(t, self.B.T)
+        term1 = torch.cos(t)
+        term2 = torch.sin(t)
+        out = torch.cat([term1, term2], dim=-1)
+        return out
+
 # --- Transformer Blocks ----------------------------------------------------------------------------------------------
 class TransformerBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, nodes_size, mlp_ratio=4):
+    def __init__(self, hidden_size, num_heads, nodes_size, t_dim, mlp_ratio=4):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -52,7 +70,8 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(self.num_tokens)
         self.norm3 = nn.LayerNorm(self.num_tokens)
 
-        self.context_embed = nn.Linear(1, self.num_tokens)
+        self.context_embed = nn.Linear(t_dim, self.num_tokens)
+
         self.mlp = nn.Sequential(
             nn.Linear(self.num_tokens, self.num_tokens * mlp_ratio),
             nn.ReLU(),
@@ -66,8 +85,8 @@ class TransformerBlock(nn.Module):
         x = self.norm2(x + x_attn)
 
         x_mlp = self.mlp(x)
-        t_embed = self.context_embed(t)
-        x_mlp = x + t_embed
+        t = self.context_embed(t)
+        x_mlp = x_mlp + t
 
         x = self.norm3(x + x_mlp)
         
@@ -82,6 +101,7 @@ class Transformer(nn.Module):
         depth=6,
         num_heads=16,
         mlp_ratio=4,
+        t_dim=64
     ):
         
         super().__init__()
@@ -89,15 +109,17 @@ class Transformer(nn.Module):
         self.num_heads = num_heads
 
         self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)  
+        self.t_embedder = GaussianFourierEmbedding(t_dim)
         
         self.blocks = nn.ModuleList([
-            TransformerBlock(hidden_size, num_heads, nodes_size, mlp_ratio=mlp_ratio) for _ in range(depth)
+            TransformerBlock(hidden_size, num_heads, nodes_size, t_dim, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
         
         self.final_layer = nn.Linear(3*nodes_size*hidden_size, nodes_size)
 
     def forward(self, x, c, t):
         x = self.x_embedder(x, c)
+        t = self.t_embedder(t)
 
         for block in self.blocks:
             x = block(x, t)
