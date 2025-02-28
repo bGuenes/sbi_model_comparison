@@ -54,7 +54,7 @@ class ModelTransfuser(nn.Module):
             nodes_size, 
             sde_type="vesde",
             sigma=25.0,
-            hidden_size=64,
+            hidden_size=128,
             depth=6,
             num_heads=16,
             mlp_ratio=4,
@@ -74,11 +74,11 @@ class ModelTransfuser(nn.Module):
             raise ValueError("Invalid SDE type")
 
         # define model
-        # self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
-        #                                depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
+                                       depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
-        self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
-                                 depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        # self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
+        #                          depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
         
     # ------------------------------------
     # /////////// Helper functions ///////////
@@ -131,7 +131,11 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Training ///////////
 
-    def train(self, data, condition_mask_data=None, batch_size=64, epochs=10, lr=1e-3, device="cpu", val_data=None, condition_mask_val=None, verbose=True):
+    def train(self, data, condition_mask_data=None, 
+                batch_size=64, epochs=10, lr=1e-3, device="cpu", 
+                val_data=None, condition_mask_val=None, 
+                verbose=True, checkpoint_path=None):
+
         start_time = time.time()
 
         self.to(device)
@@ -153,7 +157,10 @@ class ModelTransfuser(nn.Module):
         if condition_mask_val is None and val_data is not None:
             condition_mask_random_val = torch.distributions.bernoulli.Bernoulli(torch.ones_like(val_data) * 0.33)
 
-        # Training loop
+        self.best_loss = torch.inf
+        
+        # --------------------------------------------------------------------------------------------------
+        # --- Training ---
         for epoch in range(epochs):
             self.model.train()
             optimizer.train()
@@ -196,7 +203,8 @@ class ModelTransfuser(nn.Module):
             self.train_loss.append(loss_epoch)
             #torch.cuda.empty_cache()
 
-            # Validation set if provided
+            # -----------------------------------------------------------------------------------------------
+            # --- Validation ---
             if val_data is not None:
                 self.model.eval()
                 optimizer.eval()
@@ -224,6 +232,10 @@ class ModelTransfuser(nn.Module):
                     out = self.model(x=x_t, t=timestep, c=condition_mask_val_batch)
                     score = self.output_scale_function(timestep, out)
                     val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
+
+                    if val_loss <= self.best_loss and checkpoint_path is not None:
+                        self.best_loss = val_loss
+                        self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
                     
                 self.val_loss.append(val_loss)
                 #torch.cuda.empty_cache()
@@ -231,10 +243,16 @@ class ModelTransfuser(nn.Module):
                 if verbose:
                     print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
                     print()
+            # -----------------------------------------------------------------------------------------------
 
-            elif verbose:
-                print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
-                print()
+            else:
+                if loss_epoch <= self.best_loss and checkpoint_path is not None:
+                    self.best_loss = loss_epoch
+                    self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
+
+                if verbose:
+                    print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
+                    print()
         
         end_time = time.time()
         time_elapsed = (end_time - start_time) / 60
@@ -285,7 +303,7 @@ class ModelTransfuser(nn.Module):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
                 
-                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n,]).squeeze(-1).detach()
+                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n,:1]).squeeze(-1).detach()
                 score = self.output_scale_function(timestep, out)
                 dx = self.sigma**(2*timestep)* score * dt
 

@@ -66,7 +66,7 @@ val_y = norm.rvs(loc=val_y,scale=val_y_err)
 val_y = torch.tensor(val_y).float()
 
 # --- Concatenate the data ---
-train_data = torch.cat((train_x, train_y), 1)[:100_000]
+train_data = torch.cat((train_x, train_y), 1)#[:100_000]
 val_data = torch.cat((val_x, val_y), 1)
 
 
@@ -81,7 +81,7 @@ ModelTransfuser = ModelTransfuser(nodes_size)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=1, device="cuda:5")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:1", checkpoint_path="data/models")
 
 ModelTransfuser.save("data/models/ModelTransfuser_test_uni_new.pickle")
 

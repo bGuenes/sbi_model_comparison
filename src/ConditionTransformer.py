@@ -186,12 +186,12 @@ class DiTBlock(nn.Module):
 
         q, k, v = x1.repeat(1,1,3).chunk(3, dim=-1)
         #q = self.q_mlp(q) #.flatten(1)
-        #k = k * c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1)
+        k = k * c.unsqueeze(-1)
         #k = self.k_mlp(k) 
-        #v = v * (1-c.unsqueeze(-1).repeat_interleave(self.hidden_size, dim=-1))
+        v = v * c.unsqueeze(-1)
         #v = self.v_mlp(v) 
 
-        x = x + gate_msa * self.attn(q, k, v, need_weights=False)[0]#.reshape(-1, self.nodes_size, self.hidden_size)
+        x = x + c.unsqueeze(-1) * gate_msa * self.attn(q, k, v, need_weights=False)[0]#.reshape(-1, self.nodes_size, self.hidden_size)
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
         return x
