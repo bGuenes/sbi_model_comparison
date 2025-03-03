@@ -130,7 +130,7 @@ class ModelTransfuser(nn.Module):
     
     # ------------------------------------
     # /////////// Training ///////////
-
+    
     def train(self, data, condition_mask_data=None, 
                 batch_size=64, epochs=10, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 

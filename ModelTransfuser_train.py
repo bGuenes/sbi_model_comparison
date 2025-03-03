@@ -10,7 +10,7 @@ import os
 # Load data
 
 # --- Load in training data ---
-path_training = os.getcwd() + '/data/Chempy_data/chempy_train_uniform_prior_5sigma.npz'
+path_training = os.getcwd() + '/data/Chempy_data/chempy_TNG_train_data.npz'
 training_data = np.load(path_training, mmap_mode='r')
 
 elements = training_data['elements']
