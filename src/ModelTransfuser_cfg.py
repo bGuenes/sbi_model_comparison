@@ -153,8 +153,10 @@ class ModelTransfuser(nn.Module):
 
                 if cfg_prob is not None:
                     # Classifier-free guidance
-                    if torch.rand(1).item() < cfg_prob:
+                    if torch.rand(1).item() < cfg_prob/2:
                         condition_mask_batch = torch.zeros_like(condition_mask_batch)
+                    if torch.rand(1).item() > (1-cfg_prob/2):
+                        condition_mask_batch = torch.ones_like(condition_mask_batch)
 
                 # Pick random timesteps in diffusion process
                 timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps

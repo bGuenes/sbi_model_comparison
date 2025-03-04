@@ -1,4 +1,4 @@
-from src.ModelTransfuser import *
+from src.ModelTransfuser_cfg import *
 import matplotlib.pyplot as plt
 
 from scipy.stats import norm
