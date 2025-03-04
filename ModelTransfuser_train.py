@@ -81,9 +81,9 @@ ModelTransfuser = ModelTransfuser(nodes_size)
 # -------------------------------------
 # Train
 
-ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:0", checkpoint_path="data/models")
+ModelTransfuser.train(train_data, val_data=val_data, epochs=100, device="cuda:0", checkpoint_path="data/models/cfg")
 
-ModelTransfuser.save("data/models/ModelTransfuser_test_uni_new.pickle")
+ModelTransfuser.save("data/models/cfg/ModelTransfuser_cfg.pickle")
 
 epoch = np.arange(0, len(ModelTransfuser.train_loss))
 
@@ -93,4 +93,4 @@ plt.legend()
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 
-plt.savefig('plots/loss/ModelTransfuser_train_loss_test_uni_new.png')
+plt.savefig('plots/loss/ModelTransfuser_train_loss_cfg.png')

@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
@@ -22,7 +23,10 @@ class VESDE():
         Returns:
             The standard deviation.
         """
-        return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * torch.log(self.sigma)))
+        try:
+            return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * torch.log(self.sigma)))
+        except:
+            return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * np.log(self.sigma)))
 
 
 class VPSDE():
