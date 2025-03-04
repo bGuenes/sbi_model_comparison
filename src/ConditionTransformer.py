@@ -148,11 +148,6 @@ class DiTBlock(nn.Module):
         self.num_heads = num_heads
 
         self.norm1 = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
-        #self.qkv = nn.Linear(hidden_size, hidden_size, bias=True)
-
-        #self.q_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
-        #self.k_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
-        #self.v_mlp = nn.Linear(hidden_size, hidden_size, bias=True)
 
         self.attn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, batch_first=True, **block_kwargs )  
 
@@ -169,20 +164,12 @@ class DiTBlock(nn.Module):
 
     def forward(self, x, c, t):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).reshape(-1, self.nodes_size, 6*self.hidden_size).chunk(6, dim=-1)
-        #qkv = self.qkv(modulate(self.norm1(x), shift_msa, scale_msa))
-        x1 = modulate(self.norm1(x), shift_msa, scale_msa)#.flatten(1)
+        
+        x_norm = modulate(self.norm1(x), shift_msa, scale_msa)
 
-        # q = self.q_mlp(x1)
-        # k = self.k_mlp(x1 * c.repeat_interleave(self.hidden_size, dim=-1))
-        # v = self.v_mlp(x1* (1-c.repeat_interleave(self.hidden_size, dim=-1)))
+        q, k, v = x_norm.repeat(1,1,3).chunk(3, dim=-1)
 
-        q, k, v = x1.repeat(1,1,3).chunk(3, dim=-1)
-        #q = self.q_mlp(q) #.flatten(1)
-        #k = k * c.unsqueeze(-1)
-        #k = self.k_mlp(k) 
-        #v = v * c.unsqueeze(-1)
-        #v = self.v_mlp(v) 
-
+        # Attention mask to prevent latent nodes from attending to other latent nodes
         attn_mask = (1-c).type(torch.bool).unsqueeze(1).repeat(self.num_heads, self.nodes_size, 1)
 
         x = x + gate_msa * self.attn(q, k, v, need_weights=False, attn_mask=attn_mask)[0]
@@ -190,6 +177,10 @@ class DiTBlock(nn.Module):
 
         return x
 
+
+#################################################################################
+#                                 Final Layer                                   #
+#################################################################################
 
 class FinalLayer(nn.Module):
     """
@@ -216,6 +207,10 @@ class FinalLayer(nn.Module):
         x = x.flatten(1) @ self.embedding_params
         return x.squeeze(-1)
 
+
+#################################################################################
+#                                   DiT Model                                   #
+#################################################################################
 
 class DiT(nn.Module):
     """

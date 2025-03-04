@@ -12,41 +12,12 @@ import time
 
 from src.ConditionTransformer import DiT
 from src.Simformer import Transformer
+from src.sde import VESDE, VPSDE
 
-# --------------------------------------------------------------------------------------------------
-# Stochastic Differential Equations
-
-class VESDE():
-    def __init__(self, sigma=25.0):
-        """
-        Variance Exploding Stochastic Differential Equation (VESDE) class.
-        The VESDE is defined as:
-            Drift     -> f(x,t) = 0
-            Diffusion -> g(t)   = sigma^t
-        """
-        self.sigma = sigma
-
-    def marginal_prob_std(self, t):
-        """
-        Compute the standard deviation of p_{0t}(x(t) | x(0)) for VESDE.
-
-        Args:
-            t: A tensor of time steps.
-        Returns:
-            The standard deviation.
-        """
-        return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * np.log(self.sigma)))
-
-
-class VPSDE():
-    def __init__(self):
-        raise NotImplementedError("VPSDE is not implemented yet.")
-    
-
-# --------------------------------------------------------------------------------------------------
+####################################################################################################################
 
 class ModelTransfuser(nn.Module):
-    # ------------------------------------
+    ########################################
     # /////////// Initialization ///////////
 
     def __init__(
@@ -80,7 +51,7 @@ class ModelTransfuser(nn.Module):
         # self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
         #                          depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
         
-    # ------------------------------------
+    ##########################################
     # /////////// Helper functions ///////////
 
     def forward_diffusion_sample(self, x_0, t, x_1=None, condition_mask=None):
@@ -106,7 +77,7 @@ class ModelTransfuser(nn.Module):
         return x / scale
     
     
-    # ------------------------------------
+    #######################################
     # /////////// Loss function ///////////
 
     def loss_fn(self, score, timestep, x_1, condition_mask):
@@ -128,7 +99,7 @@ class ModelTransfuser(nn.Module):
 
         return loss
     
-    # ------------------------------------
+    ##################################
     # /////////// Training ///////////
     
     def train(self, data, condition_mask_data=None, 
@@ -159,8 +130,8 @@ class ModelTransfuser(nn.Module):
 
         self.best_loss = torch.inf
         
-        # --------------------------------------------------------------------------------------------------
-        # --- Training ---
+        # --------------------
+        # ----- Training -----
         for epoch in range(epochs):
             self.model.train()
             optimizer.train()
@@ -181,17 +152,19 @@ class ModelTransfuser(nn.Module):
                 condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
 
                 # Pick random timesteps in diffusion process
-                #index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
-                #timestep = self.t[index_t].reshape(-1, 1).to(device) * (1. - eps) + eps
                 timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps
 
-                #x_1 = torch.randn_like(x_0)
+                # Sample x_1 for unobserved data
                 x_1 = torch.randn_like(x_0)*(1-condition_mask_batch)+(condition_mask_batch)*x_0
 
+                # Calculate x_t for the sampled timestep
                 x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
 
+                # Calculate score
                 out = self.model(x=x_t, t=timestep, c=condition_mask_batch)
                 score = self.output_scale_function(timestep, out)
+
+                # Calculate loss
                 loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
                 loss_epoch += loss.item()
 
@@ -203,8 +176,8 @@ class ModelTransfuser(nn.Module):
             self.train_loss.append(loss_epoch)
             #torch.cuda.empty_cache()
 
-            # -----------------------------------------------------------------------------------------------
-            # --- Validation ---
+            # ----------------------
+            # ----- Validation -----
             if val_data is not None:
                 self.model.eval()
                 optimizer.eval()
@@ -221,17 +194,22 @@ class ModelTransfuser(nn.Module):
                     x_0 = val_data[i:i+batch_size_val].to(device)
                     condition_mask_val_batch = condition_mask_val[i:i+batch_size_val].to(device)
 
-                    #index_t = torch.randint(0, self.timesteps, (x_0.shape[0],))
-                    #timestep = self.t[index_t].reshape(-1, 1).to(device) * (1. - eps) + eps
+                    # Pick random timesteps in diffusion process
                     timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps
-                    #noise = torch.randn_like(x_0)
 
+                    # Sample x_1 for unobserved data
                     x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch)+(condition_mask_val_batch)*x_0
 
+                    # Calculate x_t for the sampled timestep
                     x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_val_batch)
+
+                    # Calculate score
                     out = self.model(x=x_t, t=timestep, c=condition_mask_val_batch)
                     score = self.output_scale_function(timestep, out)
-                    val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
+
+                    # Calculate loss
+                    loss = self.loss_fn(score, timestep, x_1, condition_mask_val_batch)
+                    val_loss += loss.item()
 
                     if val_loss <= self.best_loss and checkpoint_path is not None:
                         self.best_loss = val_loss
@@ -243,7 +221,7 @@ class ModelTransfuser(nn.Module):
                 if verbose:
                     print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
                     print()
-            # -----------------------------------------------------------------------------------------------
+            # ----------------------
 
             else:
                 if loss_epoch <= self.best_loss and checkpoint_path is not None:
@@ -258,7 +236,7 @@ class ModelTransfuser(nn.Module):
         time_elapsed = (end_time - start_time) / 60
         print(f"Training finished after {time_elapsed:.1f} minutes")
 
-    # ------------------------------------
+    #################################
     # /////////// Sample ///////////
 
     def sample(self, data, condition_mask, timesteps=50, num_samples=1_000, device="cpu"):
@@ -315,7 +293,7 @@ class ModelTransfuser(nn.Module):
 
         return x.detach()
     
-    # ------------------------------------
+    #####################################
     # /////////// Save & Load ///////////
 
     def save(self, path):
