@@ -69,7 +69,6 @@ class ModelTransfuser(nn.Module):
     
     def embedding_net_value(self, x):
         # Value embedding net (here we just repeat the value)
-        #dim_value=self.dim_value
         return x.repeat(1,1,self.dim_value)
     
     def output_scale_function(self, t, x):
@@ -141,10 +140,7 @@ class ModelTransfuser(nn.Module):
 
                 # Classifier-free guidance
                 if cfg_prob is not None:
-                    rand = torch.rand(1).item()
-                    if rand < cfg_prob/2:
-                        condition_mask_batch = torch.zeros_like(condition_mask_batch)
-                    elif rand > (1-cfg_prob/2):
+                    if torch.rand(1).item() < cfg_prob:
                         condition_mask_batch = torch.ones_like(condition_mask_batch)
 
                 timestep = torch.rand(x_0.shape[0], 1, device=device) * (1. - eps) + eps
@@ -194,7 +190,7 @@ class ModelTransfuser(nn.Module):
 
                 if val_loss <= self.best_loss and checkpoint_path is not None:
                     self.best_loss = val_loss
-                    self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                    self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
                 
                 if verbose:
                     print(f'--- Training Loss: {loss_epoch:11.3f} --- Validation Loss: {val_loss:11.3f} ---')
@@ -202,7 +198,7 @@ class ModelTransfuser(nn.Module):
             else:
                 if loss_epoch <= self.best_loss and checkpoint_path is not None:
                     self.best_loss = loss_epoch
-                    self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                    self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
                 if verbose:
                     print(f'--- Training Loss: {loss_epoch:11.3f} ---')
                     print()
@@ -214,7 +210,7 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Sample ///////////
 
-    def sample(self, data, condition_mask, temperature=1, timesteps=50, num_samples=1_000, device="cpu", cfg_alpha=1.5):
+    def sample(self, data, condition_mask, temperature=1, timesteps=50, num_samples=1_000, device="cpu"):
 
         self.model.eval()
         self.model.to(device)
@@ -257,19 +253,9 @@ class ModelTransfuser(nn.Module):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1) * (1. - eps) + eps
                 
-                out_cond = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n]).squeeze(-1).detach()
-                out_cond = out_cond / temperature
-                score_cond = self.output_scale_function(timestep, out_cond)
-
-                # Classifier-free guidance
-                if cfg_alpha is not None:
-                    out_uncond = self.model(x=x[n,:], t=timestep, c=torch.zeros_like(condition_mask_samples[n])).squeeze(-1).detach()
-                    out_uncond = out_uncond / temperature
-                    score_uncond = self.output_scale_function(timestep, out_uncond)
-
-                    score = score_uncond + cfg_alpha * (score_cond - score_uncond)
-                else:
-                    score = score_cond
+                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n]).squeeze(-1).detach()
+                out = out / temperature
+                score = self.output_scale_function(timestep, out)
 
                 dx = self.sigma**(2*timestep)* score * dt
 

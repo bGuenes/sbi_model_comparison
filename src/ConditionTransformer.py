@@ -161,7 +161,7 @@ class DiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(time_embedding_size, 6 * nodes_size * hidden_size, bias=True)
         )
-
+    
     def forward(self, x, c, t):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t).reshape(-1, self.nodes_size, 6*self.hidden_size).chunk(6, dim=-1)
         
@@ -268,7 +268,7 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
         # nn.init.constant_(self.final_layer.linear.weight, 0)
         # nn.init.constant_(self.final_layer.linear.bias, 0)
-
+    
     def forward(self, x, t, c):
         """
         Forward pass of DiT.
