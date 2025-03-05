@@ -119,6 +119,9 @@ def ddp_main(gpu, world_size, batch_size, epochs, sigma, depth, hidden_size, num
     dist.destroy_process_group()
 
 if __name__ == "__main__":
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--epochs', type=int, default=100)
@@ -142,10 +145,10 @@ if __name__ == "__main__":
     hidden_size = args.hidden_size
     num_heads = args.num_heads
     mlp_ratio = args.mlp_ratio
-    cfg_prob = args.cfg_prob
+    cfg_prob = None if args.cfg_prob == 0 else float(args.cfg_prob)
     path = args.path
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
+    world_size = len(args.gpus.split(','))
 
-    world_size = torch.cuda.device_count() 
     mp.spawn(ddp_main, args=(world_size, batch_size, epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path), nprocs=world_size)
