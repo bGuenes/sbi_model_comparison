@@ -103,9 +103,10 @@ class ModelTransfuser(nn.Module):
     # /////////// Training ///////////
     
     def train(self, data, condition_mask_data=None, 
-                batch_size=64, epochs=10, lr=1e-3, device="cpu", 
+                batch_size=64, max_epochs=500, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 
-                verbose=True, checkpoint_path=None, cfg_prob=0.2):
+                verbose=True, checkpoint_path=None, early_stopping_patience=10,
+                cfg_prob=0.2):
 
         start_time = time.time()
 
@@ -120,12 +121,12 @@ class ModelTransfuser(nn.Module):
         
         # --------------------------------------------------------------------------------------------------
         # --- Training ---
-        for epoch in range(epochs):
+        for epoch in range(max_epochs):
             self.model.train()
             optimizer.train()
             loss_epoch = 0
 
-            for batch in tqdm.tqdm(data, desc=f"Epoch {epoch+1}/{epochs}: ", disable=not verbose):
+            for batch in tqdm.tqdm(data, desc=f"Epoch {epoch+1}: ", disable=not verbose):
                 optimizer.zero_grad()
 
                 # Expecting batch as (x_0, condition_mask) tuple; modify if needed
@@ -192,37 +193,67 @@ class ModelTransfuser(nn.Module):
                 
                 self.val_loss.append(val_loss)
 
-                if val_loss <= self.best_loss and checkpoint_path is not None:
+                if val_loss <= self.best_loss:
                     self.best_loss = val_loss
-                    self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                    patience_counter = 0
+                    if checkpoint_path is not None:
+                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                else:
+                    patience_counter += 1
                 
                 if verbose:
                     print(f'--- Training Loss: {loss_epoch:11.3f} --- Validation Loss: {val_loss:11.3f} ---')
                     print()
             else:
-                if loss_epoch <= self.best_loss and checkpoint_path is not None:
-                    self.best_loss = loss_epoch
-                    self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                if val_loss <= self.best_loss:
+                    self.best_loss = val_loss
+                    patience_counter = 0
+                    if checkpoint_path is not None:
+                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                else:
+                    patience_counter += 1
+
+            if patience_counter >= early_stopping_patience:
                 if verbose:
-                    print(f'--- Training Loss: {loss_epoch:11.3f} ---')
-                    print()
+                    print(f"Early stopping triggered after {epoch+1} epochs")
+                break
 
         end_time = time.time()
         time_elapsed = (end_time - start_time) / 60
-        print(f"Training finished after {time_elapsed:.1f} minutes")
+
+        if verbose:
+            print(f"Training finished after {time_elapsed:.1f} minutes")
 
     # ------------------------------------
     # /////////// Sample ///////////
-
-    def sample(self, data, condition_mask, temperature=1, timesteps=50, num_samples=1_000, device="cpu", cfg_alpha=1.5):
-
+        
+    def sample(self, data, condition_mask=None, temperature=1, timesteps=50, num_samples=1_000, device="cpu", cfg_alpha=1.5, verbose=True):
         self.model.eval()
         self.model.to(device)
+
+        if isinstance(data, torch.utils.data.DataLoader):
+            all_samples = []
+            for batch in data:
+                if isinstance(batch, (list, tuple)):
+                    data_batch, condition_mask_batch = batch
+                else:
+                    data_batch = batch
+                    condition_mask_batch = condition_mask.unsqueeze(0).repeat(data_batch.shape[0], 1)
+                samples = self._sample_batch(data_batch, condition_mask_batch, temperature, timesteps, num_samples, device, cfg_alpha, verbose)
+                all_samples.append(samples)
+            return torch.cat(all_samples, dim=0)
+        else:
+            if len(data.shape) == 1:
+                data = data.unsqueeze(0)
+            if len(condition_mask.shape) == 1:
+                condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
+            return self._sample_batch(data, condition_mask, temperature, timesteps, num_samples, device, cfg_alpha, verbose)
+
+    def _sample_batch(self, data, condition_mask, temperature, timesteps, num_samples, device, cfg_alpha, verbose=True):
         data = data.to(device)
         condition_mask = condition_mask.to(device)
 
         # Shaping
-        # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
         if len(data.shape) == 1:
             data = data.unsqueeze(0)
         if len(condition_mask.shape) == 1:
@@ -241,8 +272,7 @@ class ModelTransfuser(nn.Module):
         x = data.unsqueeze(1).repeat(1,num_samples,1)
         random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) * torch.randn_like(x) * (1-condition_mask_samples)
         x += random_t1_samples
-    
-        
+
         dt = (1/timesteps)
         eps = 1e-3
         time_steps = torch.linspace(1., eps, timesteps, device=device)
@@ -252,8 +282,7 @@ class ModelTransfuser(nn.Module):
         self.dx_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
         self.x_t[:,0,:,:] = x
         
-        for n in tqdm.tqdm(range(len(data))):
-
+        for n in tqdm.tqdm(range(len(data)), disable=not verbose):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1) * (1. - eps) + eps
                 
@@ -280,7 +309,7 @@ class ModelTransfuser(nn.Module):
                 #self.score_t[n,i] = score
 
         return x.detach()
-    
+
     # ------------------------------------
     # /////////// Save & Load ///////////
 

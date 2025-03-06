@@ -83,7 +83,7 @@ def load_data():
 
 # -------------------------------------
 # DDP 
-def ddp_main(gpu, world_size, batch_size, epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp):
+def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, result_dict):
     rank = gpu
     dist.init_process_group(
         backend='nccl',
@@ -94,73 +94,100 @@ def ddp_main(gpu, world_size, batch_size, epochs, sigma, depth, hidden_size, num
     
     device = torch.device(f'cuda:{gpu}')
 
-    try:
-        # Load dataset and setup DistributedSampler
-        train_dataset, val_dataset = load_data()
-        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
+    # Load dataset and setup DistributedSampler
+    train_dataset, val_dataset = load_data()
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
 
-        # Setup model and wrap with DDP
-        model = ModelTransfuser(14, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
-        model.to(device)
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
-        
-        # Train model
-        model.module.train(train_loader, val_data=val_loader, batch_size=batch_size, epochs=epochs, device=device, cfg_prob=cfg_prob,
-                checkpoint_path=None, verbose=False)
+    # Setup model and wrap with DDP
+    model = ModelTransfuser(14, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
+    model.to(device)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    
+    # Train model
+    model.module.train(train_loader, val_data=val_loader, batch_size=batch_size, max_epochs=max_epochs, device=device, cfg_prob=cfg_prob,
+            checkpoint_path=None, verbose=(rank==0))
 
+    if rank == 0:
+        print(f"Model trained {batch_size}, {sigma}, {depth}, {hidden_size}, {num_heads}, {mlp_ratio}, {cfg_prob}, {temp}")
+    
+    torch.cuda.empty_cache()
 
-        # Mask to evaluate Posterior
-        mask = torch.zeros_like(val_dataset[0])
-        mask[6:] = 1
-        val_theta, val_x = val_dataset[:, :6], val_dataset[:, 6:]
+    # Mask to evaluate Posterior
+    mask = torch.zeros_like(val_dataset[0])
+    mask[6:] = 1
+    val_theta, val_x = val_dataset[:1000, :6], val_dataset[:1000, 6:]
 
-        theta_hat = model.module.sample(val_x, condition_mask=mask, device=device, temperature=temp).to("cpu")
-        theta_hat = theta_hat.mean(dim=1)[:,:6]
+    val_x_sampler = DistributedSampler(val_x, num_replicas=world_size, rank=rank, shuffle=False)
+    val_x_DL = DataLoader(val_x, batch_size=1000, shuffle=False, sampler=val_x_sampler)
 
+    theta_hat = model.module.sample(val_x_DL, condition_mask=mask, device=device, temperature=temp, verbose=(rank==0))
+    theta_hat = theta_hat.mean(dim=1)[:,:6].contiguous()
+
+    # Gather all theta_hat tensors from all GPUs
+    gathered_theta_hat = [torch.zeros_like(theta_hat) for _ in range(world_size)]
+    dist.all_gather(gathered_theta_hat, theta_hat)
+
+    if rank == 0:
+        gathered_theta_hat = [tensor.to("cpu") for tensor in gathered_theta_hat]
+        theta_hat = torch.cat(gathered_theta_hat, dim=0)
         mse_posterior = torch.mean((val_theta - theta_hat)**2, dim=0)
 
         # measure tarp
+        # Convert to numpy and add required dimension for bootstrap
+        theta_hat_np = theta_hat.cpu().numpy()
+        val_theta_np = val_theta.cpu().numpy()
+        theta_hat_3d = np.expand_dims(theta_hat_np, 0)  # Add sample dimension
+        
         ecp, alpha = tarp.get_tarp_coverage(
-            theta_hat, val_theta,
+            theta_hat_3d, val_theta_np,
             norm=True, bootstrap=True,
             num_bootstrap=100
         )
-
         tarp_val = torch.mean(torch.from_numpy(ecp[:,ecp.shape[1]//2]))
+        tarp_diff = abs(tarp_val-0.5)
+        
+        # Store results in shared dictionary
+        result_dict['mse_posterior'] = mse_posterior
+        result_dict['tarp_diff'] = tarp_diff
 
-        return mse_posterior, abs(tarp_val-0.5)
-
-    except torch.cuda.OutOfMemoryError:
-        print(f"Out of memory error on GPU {gpu}. Skipping this configuration.")
-        return None, None
-    finally:
-        dist.destroy_process_group()
+    dist.destroy_process_group()
 
 # -------------------------------------
 # Optuna
 def objective(trial):
 
-    # Variables
-    batch_size = trial.suggest_categorical('batch_size', [64,128,512,1028])
-    epochs = trial.suggest_int('epochs', 10, 500)
-    sigma = trial.suggest_float('sigma', 1.1, 30.0)
-    depth = trial.suggest_int('depth', 1, 12)
-    num_heads = trial.suggest_int('num_heads', 1, 100)
-    hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,10)
-    hidden_size = num_heads*hidden_size_factor
-    mlp_ratio = trial.suggest_int('mlp_ratio', 1, 10)
-    cfg_prob = trial.suggest_float('cfg_prob', 0.0, 1.0)
-    cfg_prob = None if cfg_prob == 0.0 else cfg_prob
-    temp = trial.suggest_float('Temperature', 0.0, 1.0)
-    temp = None if temp == 0.0 else temp
+    try:
+        # Variables
+        batch_size = trial.suggest_categorical('batch_size', [64,128,512,1028])
+        sigma = trial.suggest_float('sigma', 1.1, 30.0)
+        depth = trial.suggest_int('depth', 1, 12)
+        num_heads = trial.suggest_int('num_heads', 1, 32)
+        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,20)
+        hidden_size = num_heads*hidden_size_factor
+        mlp_ratio = trial.suggest_int('mlp_ratio', 1, 10)
+        cfg_prob = trial.suggest_float('cfg_prob', 0.0, 1.0)
+        cfg_prob = None if cfg_prob == 0.0 else cfg_prob
+        temp = trial.suggest_float('Temperature', 0.1, 10.0)
 
-    # Train model
-    a,b = mp.spawn(ddp_main, args=(world_size, batch_size, epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp), nprocs=world_size)
-   
-    return a, b
+        result_dict = mp.Manager().dict()
+
+        # Train model
+        max_epochs = 500
+        mp.spawn(ddp_main, args=(world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, result_dict), nprocs=world_size)
+
+        # Get results from the shared dict
+        mse_posterior = result_dict.get('mse_posterior')
+        tarp_diff = result_dict.get('tarp_diff')
+
+        return mse_posterior.mean().item(), tarp_diff.item()
+
+    except Exception as e:
+        print(f"Trial failed with error: {e}")
+        # Return very bad scores for failed trials
+        return float('inf'), float('inf')
 
 # -------------------------------------
 # Main

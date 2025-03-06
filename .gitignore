@@ -1,3 +1,4 @@
 data/Chempy_data/*
 data/models/*
 Chempy/
+.vscode/
