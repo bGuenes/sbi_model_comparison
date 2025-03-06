@@ -83,7 +83,7 @@ def load_data():
 
 # -------------------------------------
 # DDP 
-def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, result_dict):
+def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, cfg_alpha, result_dict):
     rank = gpu
     dist.init_process_group(
         backend='nccl',
@@ -123,7 +123,7 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
     val_x_sampler = DistributedSampler(val_x, num_replicas=world_size, rank=rank, shuffle=False)
     val_x_DL = DataLoader(val_x, batch_size=1000, shuffle=False, sampler=val_x_sampler)
 
-    theta_hat = model.module.sample(val_x_DL, condition_mask=mask, device=device, temperature=temp, verbose=(rank==0))
+    theta_hat = model.module.sample(val_x_DL, condition_mask=mask, device=device, temperature=temp, cfg_alpha=cfg_alpha, verbose=(rank==0))
     theta_hat = theta_hat.mean(dim=1)[:,:6].contiguous()
 
     # Gather all theta_hat tensors from all GPUs
@@ -171,12 +171,14 @@ def objective(trial):
         cfg_prob = trial.suggest_float('cfg_prob', 0.0, 1.0)
         cfg_prob = None if cfg_prob == 0.0 else cfg_prob
         temp = trial.suggest_float('Temperature', 0.1, 10.0)
+        cfg_alpha = trial.suggest_float('cfg_alpha', 0.0, 10)
+        cfg_alpha = None if cfg_alpha == 0.0 else cfg_alpha
 
         result_dict = mp.Manager().dict()
 
         # Train model
         max_epochs = 500
-        mp.spawn(ddp_main, args=(world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, result_dict), nprocs=world_size)
+        mp.spawn(ddp_main, args=(world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, cfg_alpha, result_dict), nprocs=world_size)
 
         # Get results from the shared dict
         mse_posterior = result_dict.get('mse_posterior')

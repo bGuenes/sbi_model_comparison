@@ -78,7 +78,7 @@ def load_data():
 
     return train_data, val_data
 
-def ddp_main(gpu, world_size, batch_size, epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path):
+def ddp_main(gpu, world_size, batch_size, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path):
     rank = gpu
     dist.init_process_group(
         backend='nccl',
@@ -102,7 +102,7 @@ def ddp_main(gpu, world_size, batch_size, epochs, sigma, depth, hidden_size, num
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
     
     # Train model
-    model.module.train(train_loader, val_data=val_loader, batch_size=batch_size, epochs=epochs, device=device, cfg_prob=cfg_prob,
+    model.module.train(train_loader, val_data=val_loader, batch_size=batch_size, device=device, cfg_prob=cfg_prob,
               checkpoint_path=path, verbose=(rank==0))
 
     if rank == 0:
@@ -124,7 +124,6 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--sigma', type=float, default=25.0)
     parser.add_argument('--depth', type=int, default=6)
     parser.add_argument('--hidden_size', type=int, default=128)
@@ -139,7 +138,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     batch_size = args.batch_size
-    epochs = args.epochs
     sigma = args.sigma
     depth = args.depth
     hidden_size = args.hidden_size
@@ -151,4 +149,4 @@ if __name__ == "__main__":
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
     world_size = len(args.gpus.split(','))
 
-    mp.spawn(ddp_main, args=(world_size, batch_size, epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path), nprocs=world_size)
+    mp.spawn(ddp_main, args=(world_size, batch_size, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path), nprocs=world_size)
