@@ -143,10 +143,8 @@ class ModelTransfuser(nn.Module):
                 # Classifier-free guidance
                 if cfg_prob is not None:
                     rand = torch.rand(1).item()
-                    if rand < cfg_prob/2:
+                    if rand < cfg_prob:
                         condition_mask_batch = torch.zeros_like(condition_mask_batch)
-                    elif rand > (1-cfg_prob/2):
-                        condition_mask_batch = torch.ones_like(condition_mask_batch)
 
                 timestep = torch.rand(x_0.shape[0], 1, device=device) * (1. - eps) + eps
 
@@ -227,7 +225,7 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Sample ///////////
         
-    def sample(self, data, condition_mask=None, temperature=1, timesteps=50, num_samples=1_000, device="cpu", cfg_alpha=1.5, verbose=True):
+    def sample(self, data, condition_mask=None, temperature=1, timesteps=50, num_samples=1_000, device="cpu", cfg_alpha=None, verbose=True):
         self.model.eval()
         self.model.to(device)
 
@@ -304,9 +302,9 @@ class ModelTransfuser(nn.Module):
 
                 x[n,:] = x[n,:] + dx * (1-condition_mask_samples[n,:])
 
-                #self.x_t[n,i+1] = x[n,:]
-                #self.dx_t[n,i] = dx
-                #self.score_t[n,i] = score
+                self.x_t[n,i+1] = x[n,:]
+                self.dx_t[n,i] = dx
+                self.score_t[n,i] = score
 
         return x.detach()
 

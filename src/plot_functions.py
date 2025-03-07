@@ -42,6 +42,10 @@ def n_stars_plot(x1, x2, x_true, save_name, no_stars= np.array([1, 10, 100, 500,
     fig,ax=plt.subplots(nrows=1,ncols=2,figsize=(26,6))
 
     def plot(fit, err, true, ax, name):
+        ax.set_ylim([true-0.2*abs(true), true+0.2*abs(true)])
+        ax.set_xscale('log')
+        ax.set_xlim([1,no_stars[-1]])
+
         ax.plot(no_stars, fit, color="b", label="Fit")
         ax.fill_between(no_stars, fit-err, fit+err, alpha=0.3,color="b", label=r"1 & 2 $\sigma$")
         ax.fill_between(no_stars, fit-2*err, fit+2*err, alpha=0.2,color="b")
@@ -50,9 +54,6 @@ def n_stars_plot(x1, x2, x_true, save_name, no_stars= np.array([1, 10, 100, 500,
 
         ax.set_xlabel(r'$N_{\rm stars}$', fontsize=40)
         ax.set_ylabel(name, fontsize=40)
-        ax.set_ylim([true-0.2*abs(true), true+0.2*abs(true)])
-        ax.set_xscale('log')
-        ax.set_xlim([1,no_stars[-1]])
         ax.tick_params(labelsize=30, size=10, width=3)
         ax.tick_params(which='minor', size=5, width=2)
 

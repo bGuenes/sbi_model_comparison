@@ -18,7 +18,7 @@ import tarp
 try:
     from sbi.inference.posteriors.base_posterior import NeuralPosterior
     from sbi.inference.posteriors import DirectPosterior
-    from sbi.inference.posteriors.ensemble_posterior import EnsemblePosterior
+    #from sbi.inference.posteriors.ensemble_posterior import EnsemblePosterior
     ModelClass = NeuralPosterior
     backend = 'torch'
 except ModuleNotFoundError:

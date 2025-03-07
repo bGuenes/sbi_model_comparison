@@ -2,6 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
+from scipy.stats import gaussian_kde
 import argparse
 
 import torch
@@ -83,7 +84,7 @@ def load_data():
 
 # -------------------------------------
 # DDP 
-def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, cfg_alpha, result_dict):
+def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, result_dict):
     rank = gpu
     dist.init_process_group(
         backend='nccl',
@@ -111,7 +112,7 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
             checkpoint_path=None, verbose=(rank==0))
 
     if rank == 0:
-        print(f"Model trained {batch_size}, {sigma}, {depth}, {hidden_size}, {num_heads}, {mlp_ratio}, {cfg_prob}, {temp}")
+        print(f"Model trained {batch_size}, {sigma}, {depth}, {hidden_size}, {num_heads}, {mlp_ratio}, {cfg_prob}")
     
     torch.cuda.empty_cache()
 
@@ -125,7 +126,7 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
 
     dist.barrier()
     
-    theta_hat_samples = model.module.sample(val_x_DL, condition_mask=mask, device=device, temperature=temp, cfg_alpha=cfg_alpha, verbose=(rank==0))
+    theta_hat_samples = model.module.sample(val_x_DL, condition_mask=mask, device=device, verbose=(rank==0))
     #theta_hat = theta_hat.mean(dim=1)[:,:6].contiguous()
     
     dist.barrier()
@@ -139,26 +140,34 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
     if rank == 0:
         gathered_theta_hat = [tensor.to("cpu") for tensor in gathered_theta_hat]
         gathered_theta_hat = torch.cat(gathered_theta_hat, dim=0)
-        theta_hat = gathered_theta_hat.mean(dim=1)[:,:6].contiguous()
-        #mse_posterior = torch.mean((val_theta - theta_hat)**2, dim=0)
-        ape = 100*torch.abs((val_theta - theta_hat) / val_theta)
-        ape = ape.mean(0)[:2].sum()
-
-        # measure tarp
+        # theta_hat = gathered_theta_hat.mean(dim=1)[:,:6].contiguous()
+        # #mse_posterior = torch.mean((val_theta - theta_hat)**2, dim=0)
+        # ape = (100*torch.abs((val_theta - theta_hat) / val_theta))*2
+        # ape = ape.mean(0)[:2].sum()
+        
         # Convert to numpy and add required dimension for bootstrap
-        theta_hat_np = gathered_theta_hat[:,:,:6].cpu().numpy()
+        thetas_np = gathered_theta_hat[:,:,:6].contiguous().cpu().numpy()
         val_theta_np = val_theta.cpu().numpy()
         
+        # Log Prob
+        def log_prob(samples, theta):
+            kde = gaussian_kde(samples.T)
+            return kde.logpdf(theta).item()
+
+        log_probs = np.array([log_prob(thetas_np[i], val_theta_np[i]) for i in range(len(thetas_np))])
+        mean_log_prob = -np.mean(log_probs)
+
+        # measure tarp
         ecp, alpha = tarp.get_tarp_coverage(
-            theta_hat_np, val_theta_np,
+            thetas_np.transpose(1,0,2), val_theta_np,
             norm=True, bootstrap=True,
             num_bootstrap=100
         )
-        tarp_val = torch.mean(torch.from_numpy(ecp[:,ecp.shape[1]//2]))
+        tarp_val = np.mean(ecp[:,ecp.shape[1]//2])
         tarp_diff = abs(tarp_val-0.5)
         
         # Store results in shared dictionary
-        result_dict['ape'] = ape
+        result_dict['mean_log_prob'] = mean_log_prob
         result_dict['tarp_diff'] = tarp_diff
 
     dist.destroy_process_group()
@@ -173,26 +182,26 @@ def objective(trial):
         sigma = trial.suggest_float('sigma', 1.1, 30.0)
         depth = trial.suggest_int('depth', 1, 12)
         num_heads = trial.suggest_int('num_heads', 1, 32)
-        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,20)
+        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,256)
         hidden_size = num_heads*hidden_size_factor
         mlp_ratio = trial.suggest_int('mlp_ratio', 1, 10)
         cfg_prob = trial.suggest_float('cfg_prob', 0.0, 1.0)
-        cfg_prob = None if cfg_prob < 0.1 else cfg_prob
-        temp = trial.suggest_float('Temperature', 0.1, 10.0)
-        cfg_alpha = trial.suggest_float('cfg_alpha', 0.0, 10)
-        cfg_alpha = None if cfg_alpha < 0.1 else cfg_alpha
+        cfg_prob = None if cfg_prob < 0.05 else cfg_prob
+        #temp = trial.suggest_float('Temperature', 0.1, 10.0)
+        #cfg_alpha = trial.suggest_float('cfg_alpha', 0.0, 10)
+        #cfg_alpha = None if cfg_alpha < 0.1 else cfg_alpha
 
         result_dict = mp.Manager().dict()
 
         # Train model
         max_epochs = 500
-        mp.spawn(ddp_main, args=(world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, temp, cfg_alpha, result_dict), nprocs=world_size)
+        mp.spawn(ddp_main, args=(world_size, batch_size, max_epochs, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, result_dict), nprocs=world_size)
 
         # Get results from the shared dict
-        ape = result_dict.get('ape')
+        mean_log_prob = result_dict.get('mean_log_prob')
         tarp_diff = result_dict.get('tarp_diff')
 
-        return ape.item(), tarp_diff.item()
+        return mean_log_prob, tarp_diff.item()
 
     except Exception as e:
         print(f"Trial failed with error: {e}")
@@ -220,5 +229,5 @@ if __name__ == "__main__":
     storage_name = 'sqlite:///ModelTransfuser_Chempy.db'
     study = optuna.create_study(study_name=study_name, storage=storage_name,directions=['minimize', 'minimize'], load_if_exists=True)
     study = optuna.load_study(study_name=study_name, storage=storage_name)
-    study.optimize(objective, callbacks=[MaxTrialsCallback(100)])
+    study.optimize(objective, callbacks=[MaxTrialsCallback(500)])
     

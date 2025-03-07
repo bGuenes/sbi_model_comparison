@@ -105,6 +105,8 @@ def ddp_main(gpu, world_size, batch_size, sigma, depth, hidden_size, num_heads, 
     model.module.train(train_loader, val_data=val_loader, batch_size=batch_size, device=device, cfg_prob=cfg_prob,
               checkpoint_path=path, verbose=(rank==0))
 
+    dist.barrier()
+    
     if rank == 0:
         model.module.save(path+"Model.pickle")
         # Plot loss (assumes loss lists collected in model.module.train_loss)
