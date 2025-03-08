@@ -228,8 +228,8 @@ if __name__ == "__main__":
     world_size = len(args.gpus.split(','))
 
     # Optuna
-    study_name = 'ModelTransfuser_Chempy'  # Unique identifier of the study.
-    storage_name = 'sqlite:///ModelTransfuser_Chempy.db'
+    study_name = 'ModelTransfuser_Chempy_A100'  # Unique identifier of the study.
+    storage_name = 'sqlite:///ModelTransfuser_Chempy_A100.db'
     study = optuna.create_study(study_name=study_name, storage=storage_name,directions=['minimize', 'minimize'], load_if_exists=True)
     study = optuna.load_study(study_name=study_name, storage=storage_name)
     study.optimize(objective, callbacks=[MaxTrialsCallback(500)])
