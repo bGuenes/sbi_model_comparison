@@ -105,7 +105,7 @@ class ModelTransfuser(nn.Module):
     def train(self, data, condition_mask_data=None, 
                 batch_size=64, max_epochs=500, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 
-                verbose=True, checkpoint_path=None, early_stopping_patience=10,
+                verbose=True, checkpoint_path=None, early_stopping_patience=20,
                 cfg_prob=0.2):
 
         start_time = time.time()

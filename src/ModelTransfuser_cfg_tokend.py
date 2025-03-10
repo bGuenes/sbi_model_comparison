@@ -13,6 +13,7 @@ import time
 from src.ConditionTransformer import DiT
 from src.Simformer import Transformer
 from src.sde import VESDE, VPSDE
+from src.Tokenizer import SBITokenizer
 
 # --------------------------------------------------------------------------------------------------
 
@@ -29,6 +30,10 @@ class ModelTransfuser(nn.Module):
             depth=6,
             num_heads=16,
             mlp_ratio=4,
+            n_bins=256,
+            use_vq=True,
+            vq_dim=128,
+            vq_codebook_size=1024
             ):
         
         super(ModelTransfuser, self).__init__()
@@ -43,6 +48,8 @@ class ModelTransfuser(nn.Module):
             self.sde = VPSDE()
         else:
             raise ValueError("Invalid SDE type")
+        
+        self.tokenizer = SBITokenizer(nodes_size=nodes_size, n_bins=n_bins, use_vq=use_vq, vq_dim=vq_dim, vq_codebook_size=vq_codebook_size)
 
         # define model
         self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
@@ -69,11 +76,37 @@ class ModelTransfuser(nn.Module):
     
     def embedding_net_value(self, x):
         # Value embedding net (here we just repeat the value)
+        #dim_value=self.dim_value
         return x.repeat(1,1,self.dim_value)
     
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
         return x / scale
+    
+    def fit_tokenizer(self, data, device="cpu"):
+        """Fit tokenizer with data from a DataLoader."""
+        # Collect all data from dataloader
+        all_data = []
+        
+        for batch in data:
+            # Handle different batch formats
+            if isinstance(batch, (list, tuple)):
+                x_batch = batch[0]  # Assuming the first element is the data
+            else:
+                x_batch = batch
+            
+            # Move to CPU for concatenation
+            x_batch = x_batch.to("cpu").detach()
+            all_data.append(x_batch)
+        
+        # Concatenate all batches
+        combined_data = torch.cat(all_data, dim=0)
+        
+        # Fit the tokenizer with all collected data
+        print(f"Fitting tokenizer on {combined_data.shape[0]} data points")
+        self.tokenizer.fit(combined_data)
+        
+        return self.tokenizer
     
     
     # ------------------------------------
@@ -98,13 +131,16 @@ class ModelTransfuser(nn.Module):
 
         return loss
     
+    
+    
     # ------------------------------------
     # /////////// Training ///////////
     
     def train(self, data, condition_mask_data=None, 
-                batch_size=64, epochs=10, lr=1e-3, device="cpu", 
+                batch_size=64, max_epochs=500, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 
-                verbose=True, checkpoint_path=None, cfg_prob=0.2):
+                verbose=True, checkpoint_path=None, early_stopping_patience=20,
+                cfg_prob=0.2):
 
         start_time = time.time()
 
@@ -116,15 +152,19 @@ class ModelTransfuser(nn.Module):
         self.train_loss = []
         self.val_loss = []
         self.best_loss = torch.inf
+
+        # --------------------------------------------------------------------------------------------------
+        # --- Convert Data to Tokens ---
+        self.tokenizer = self.fit_tokenizer(data)       
         
         # --------------------------------------------------------------------------------------------------
         # --- Training ---
-        for epoch in range(epochs):
+        for epoch in range(max_epochs):
             self.model.train()
             optimizer.train()
             loss_epoch = 0
 
-            for batch in tqdm.tqdm(data, desc=f"Epoch {epoch+1}/{epochs}: ", disable=not verbose):
+            for batch in tqdm.tqdm(data, desc=f"Epoch {epoch+1}: ", disable=not verbose):
                 optimizer.zero_grad()
 
                 # Expecting batch as (x_0, condition_mask) tuple; modify if needed
@@ -140,8 +180,9 @@ class ModelTransfuser(nn.Module):
 
                 # Classifier-free guidance
                 if cfg_prob is not None:
-                    if torch.rand(1).item() < cfg_prob:
-                        condition_mask_batch = torch.ones_like(condition_mask_batch)
+                    rand = torch.rand(1).item()
+                    if rand < cfg_prob:
+                        condition_mask_batch = torch.zeros_like(condition_mask_batch)
 
                 timestep = torch.rand(x_0.shape[0], 1, device=device) * (1. - eps) + eps
 
@@ -188,37 +229,67 @@ class ModelTransfuser(nn.Module):
                 
                 self.val_loss.append(val_loss)
 
-                if val_loss <= self.best_loss and checkpoint_path is not None:
+                if val_loss <= self.best_loss:
                     self.best_loss = val_loss
-                    self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
+                    patience_counter = 0
+                    if checkpoint_path is not None:
+                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                else:
+                    patience_counter += 1
                 
                 if verbose:
                     print(f'--- Training Loss: {loss_epoch:11.3f} --- Validation Loss: {val_loss:11.3f} ---')
                     print()
             else:
-                if loss_epoch <= self.best_loss and checkpoint_path is not None:
-                    self.best_loss = loss_epoch
-                    self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
+                if val_loss <= self.best_loss:
+                    self.best_loss = val_loss
+                    patience_counter = 0
+                    if checkpoint_path is not None:
+                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                else:
+                    patience_counter += 1
+
+            if patience_counter >= early_stopping_patience:
                 if verbose:
-                    print(f'--- Training Loss: {loss_epoch:11.3f} ---')
-                    print()
+                    print(f"Early stopping triggered after {epoch+1} epochs")
+                break
 
         end_time = time.time()
         time_elapsed = (end_time - start_time) / 60
-        print(f"Training finished after {time_elapsed:.1f} minutes")
+
+        if verbose:
+            print(f"Training finished after {time_elapsed:.1f} minutes")
 
     # ------------------------------------
     # /////////// Sample ///////////
-
-    def sample(self, data, condition_mask, temperature=1, timesteps=50, num_samples=1_000, device="cpu"):
-
+        
+    def sample(self, data, condition_mask=None, temperature=1, timesteps=50, num_samples=1_000, device="cpu", cfg_alpha=None, verbose=True):
         self.model.eval()
         self.model.to(device)
+
+        if isinstance(data, torch.utils.data.DataLoader):
+            all_samples = []
+            for batch in data:
+                if isinstance(batch, (list, tuple)):
+                    data_batch, condition_mask_batch = batch
+                else:
+                    data_batch = batch
+                    condition_mask_batch = condition_mask.unsqueeze(0).repeat(data_batch.shape[0], 1)
+                samples = self._sample_batch(data_batch, condition_mask_batch, temperature, timesteps, num_samples, device, cfg_alpha, verbose)
+                all_samples.append(samples)
+            return torch.cat(all_samples, dim=0)
+        else:
+            if len(data.shape) == 1:
+                data = data.unsqueeze(0)
+            if len(condition_mask.shape) == 1:
+                condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
+            return self._sample_batch(data, condition_mask, temperature, timesteps, num_samples, device, cfg_alpha, verbose)
+
+    def _sample_batch(self, data, condition_mask, temperature, timesteps, num_samples, device, cfg_alpha, verbose=True):
         data = data.to(device)
         condition_mask = condition_mask.to(device)
 
         # Shaping
-        # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
         if len(data.shape) == 1:
             data = data.unsqueeze(0)
         if len(condition_mask.shape) == 1:
@@ -237,8 +308,7 @@ class ModelTransfuser(nn.Module):
         x = data.unsqueeze(1).repeat(1,num_samples,1)
         random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) * torch.randn_like(x) * (1-condition_mask_samples)
         x += random_t1_samples
-    
-        
+
         dt = (1/timesteps)
         eps = 1e-3
         time_steps = torch.linspace(1., eps, timesteps, device=device)
@@ -248,25 +318,34 @@ class ModelTransfuser(nn.Module):
         self.dx_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
         self.x_t[:,0,:,:] = x
         
-        for n in tqdm.tqdm(range(len(data))):
-
+        for n in tqdm.tqdm(range(len(data)), disable=not verbose):
             for i,t in enumerate(time_steps):
                 timestep = t.reshape(-1, 1) * (1. - eps) + eps
                 
-                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n]).squeeze(-1).detach()
-                out = out / temperature
-                score = self.output_scale_function(timestep, out)
+                out_cond = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n]).squeeze(-1).detach()
+                out_cond = out_cond / temperature
+                score_cond = self.output_scale_function(timestep, out_cond)
+
+                # Classifier-free guidance
+                if cfg_alpha is not None:
+                    out_uncond = self.model(x=x[n,:], t=timestep, c=torch.zeros_like(condition_mask_samples[n])).squeeze(-1).detach()
+                    out_uncond = out_uncond / temperature
+                    score_uncond = self.output_scale_function(timestep, out_uncond)
+
+                    score = score_uncond + cfg_alpha * (score_cond - score_uncond)
+                else:
+                    score = score_cond
 
                 dx = self.sigma**(2*timestep)* score * dt
 
                 x[n,:] = x[n,:] + dx * (1-condition_mask_samples[n,:])
 
-                #self.x_t[n,i+1] = x[n,:]
-                #self.dx_t[n,i] = dx
-                #self.score_t[n,i] = score
+                self.x_t[n,i+1] = x[n,:]
+                self.dx_t[n,i] = dx
+                self.score_t[n,i] = score
 
         return x.detach()
-    
+
     # ------------------------------------
     # /////////// Save & Load ///////////
 

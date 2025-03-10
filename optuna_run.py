@@ -119,7 +119,7 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
     # Mask to evaluate Posterior
     mask = torch.zeros_like(val_dataset[0])
     mask[6:] = 1
-    val_theta, val_x = val_dataset[:1000, :6], val_dataset[:1000, 6:]
+    val_theta, val_x = val_dataset[:10_000, :6], val_dataset[:10_000, 6:]
 
     val_x_sampler = DistributedSampler(val_x, num_replicas=world_size, rank=rank, shuffle=False)
     val_x_DL = DataLoader(val_x, batch_size=1000, shuffle=False, sampler=val_x_sampler)
@@ -228,9 +228,9 @@ if __name__ == "__main__":
     world_size = len(args.gpus.split(','))
 
     # Optuna
-    study_name = 'ModelTransfuser_Chempy'  # Unique identifier of the study.
+    study_name = 'ModelTransfuser_Chempy_bigVal'  # Unique identifier of the study.
     storage_name = 'sqlite:///ModelTransfuser_Chempy.db'
     study = optuna.create_study(study_name=study_name, storage=storage_name,directions=['minimize', 'minimize'], load_if_exists=True)
     study = optuna.load_study(study_name=study_name, storage=storage_name)
-    study.optimize(objective, callbacks=[MaxTrialsCallback(500)])
+    study.optimize(objective,n_trials=10, callbacks=[MaxTrialsCallback(1000)])
     

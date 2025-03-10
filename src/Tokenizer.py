@@ -77,48 +77,37 @@ class AdaptiveTokenizer:
             return self.bin_edges[tokens] + offsets
 
 class SBITokenizer:
-    def __init__(self, param_dim, data_dim, param_bins=64, data_bins=256, 
+    def __init__(self, nodes_size, n_bins=256, 
                  use_vq=True, vq_dim=128, vq_codebook_size=1024):
-        self.param_dim = param_dim
-        self.data_dim = data_dim
-        self.param_tokenizer = AdaptiveTokenizer(n_bins=param_bins)
-        self.data_tokenizer = AdaptiveTokenizer(n_bins=data_bins)
+        
+        self.nodes_size = nodes_size
+
+        self.tokenizer = AdaptiveTokenizer(n_bins=n_bins)
         
         self.use_vq = use_vq
         if use_vq:
             self.vq_encoder = nn.Sequential(
-                nn.Linear(param_dim + data_dim, vq_dim * 2),
+                nn.Linear(nodes_size, vq_dim * 2),
                 nn.ReLU(),
                 nn.Linear(vq_dim * 2, vq_dim)
             )
             self.vq_embedding = VQEmbedding(vq_codebook_size, vq_dim)
         
-    def fit(self, parameters, data):
+    def fit(self, joint_data):
         """Fit tokenizers to simulation data"""
-        self.param_tokenizer.fit(parameters)
-        self.data_tokenizer.fit(data)
+        self.tokenizer.fit(joint_data)
         return self
     
-    def encode_parameters(self, parameters):
+    def encode(self, joint_data):
         """Convert parameters to tokens"""
         if self.use_vq:
             # Use learned VQ for parameters (better for capturing complex distributions)
-            encoded = self.vq_encoder(parameters)
+            encoded = self.vq_encoder(joint_data)
             quantized, _, indices = self.vq_embedding(encoded.unsqueeze(2).unsqueeze(3))
             return indices.squeeze()
         else:
             # Use adaptive binning
-            return torch.tensor(self.param_tokenizer.encode(parameters.cpu().numpy()))
-    
-    def encode_data(self, data):
-        """Convert data to tokens"""
-        return torch.tensor(self.data_tokenizer.encode(data.cpu().numpy()))
-    
-    def encode_all(self, parameters, data):
-        """Encode both parameters and data"""
-        param_tokens = self.encode_parameters(parameters)
-        data_tokens = self.encode_data(data)
-        return param_tokens, data_tokens
+            return torch.tensor(self.tokenizer.encode(joint_data.cpu().numpy()))
     
     def decode_parameters(self, tokens):
         """Convert parameter tokens back to continuous values"""
@@ -128,4 +117,4 @@ class SBITokenizer:
             # Decode through a projection (would need an additional decoder network)
             return quantized
         else:
-            return torch.tensor(self.param_tokenizer.decode(tokens.cpu().numpy()))
+            return torch.tensor(self.tokenizer.decode(tokens.cpu().numpy()))
