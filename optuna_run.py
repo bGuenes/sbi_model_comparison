@@ -119,14 +119,14 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
     # Mask to evaluate Posterior
     mask = torch.zeros_like(val_dataset[0])
     mask[6:] = 1
-    val_theta, val_x = val_dataset[:10_000, :6], val_dataset[:10_000, 6:]
+    val_theta, val_x = val_dataset[:1_000, :6], val_dataset[:1_000, 6:]
 
     val_x_sampler = DistributedSampler(val_x, num_replicas=world_size, rank=rank, shuffle=False)
     val_x_DL = DataLoader(val_x, batch_size=1000, shuffle=False, sampler=val_x_sampler)
 
     dist.barrier()
     
-    theta_hat_samples = model.module.sample(val_x_DL, condition_mask=mask, device=device, verbose=(rank==0))
+    theta_hat_samples = model.module.sample_hybrid(val_x_DL, condition_mask=mask, device=device, verbose=(rank==0), num_samples=1000, timesteps=100, )
     #theta_hat = theta_hat.mean(dim=1)[:,:6].contiguous()
     
     dist.barrier()
@@ -185,7 +185,7 @@ def objective(trial):
         sigma = trial.suggest_float('sigma', 1.1, 30.0)
         depth = trial.suggest_int('depth', 1, 12)
         num_heads = trial.suggest_int('num_heads', 1, 32)
-        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,256)
+        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,512)
         hidden_size = num_heads*hidden_size_factor
         mlp_ratio = trial.suggest_int('mlp_ratio', 1, 10)
         cfg_prob = trial.suggest_float('cfg_prob', 0.0, 1.0)
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     world_size = len(args.gpus.split(','))
 
     # Optuna
-    study_name = 'ModelTransfuser_Chempy_bigVal'  # Unique identifier of the study.
+    study_name = 'ModelTransfuser_Chempy_hybrid_sampler'  # Unique identifier of the study.
     storage_name = 'sqlite:///ModelTransfuser_Chempy.db'
     study = optuna.create_study(study_name=study_name, storage=storage_name,directions=['minimize', 'minimize'], load_if_exists=True)
     study = optuna.load_study(study_name=study_name, storage=storage_name)

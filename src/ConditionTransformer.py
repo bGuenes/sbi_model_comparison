@@ -12,7 +12,7 @@ def modulate(x, shift, scale):
 
 
 #################################################################################
-#               Embedding Layers for Timesteps and Class Labels                 #
+#                   Embedding Layers for Inputs and Timesteps                   #
 #################################################################################
 
 class InputEmbedder(nn.Module):
@@ -67,25 +67,14 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
-
-class ConditionEmbedder(nn.Module):
-    """
-    Embeds conditioning information.
-    Also handles label dropout for classifier-free guidance.
-    """
-    def __init__(self, nodes_size, hidden_size):
-        super().__init__()
-
-        self.embedding = nn.Embedding(nodes_size, hidden_size)
-
-    def forward(self, conditions):
-        embeddings = self.embedding(conditions)
-        return embeddings.flatten(1)
+    
+#################################################################################
+#                               Multi-Layer Perceptron                          #
+#################################################################################
 
 class Mlp(nn.Module):
-    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
-
-    NOTE: When use_conv=True, expects 2D NCHW tensors, otherwise N*C expected.
+    """
+    MLP for Output of Self-Attention
     """
     def __init__(
             self,
@@ -93,43 +82,22 @@ class Mlp(nn.Module):
             hidden_features=None,
             out_features=None,
             act_layer=nn.GELU,
-            norm_layer=None,
             bias=True,
-            drop=0.,
-            use_conv=False,
     ):
         super().__init__()
 
-        # From PyTorch internals
-        def _ntuple(n):
-            def parse(x):
-                if isinstance(x, collections.abc.Iterable) and not isinstance(x, str):
-                    return tuple(x)
-                return tuple(repeat(x, n))
-            return parse
-        
-        to_2tuple = _ntuple(2)
-
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        bias = to_2tuple(bias)
-        drop_probs = to_2tuple(drop)
-        linear_layer = partial(nn.Conv2d, kernel_size=1) if use_conv else nn.Linear
 
-        self.fc1 = linear_layer(in_features, hidden_features, bias=bias[0])
+        self.fc1 = nn.Linear(in_features, hidden_features, bias=bias)
         self.act = act_layer()
-        self.drop1 = nn.Dropout(drop_probs[0])
-        self.norm = norm_layer(hidden_features) if norm_layer is not None else nn.Identity()
-        self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1])
-        self.drop2 = nn.Dropout(drop_probs[1])
+        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
 
     def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
-        x = self.drop1(x)
-        x = self.norm(x)
         x = self.fc2(x)
-        x = self.drop2(x)
+
         return x
 
 
@@ -155,7 +123,7 @@ class DiTBlock(nn.Module):
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu)
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -192,7 +160,6 @@ class FinalLayer(nn.Module):
         self.nodes_size = nodes_size
 
         self.norm_final = nn.LayerNorm((nodes_size, hidden_size), elementwise_affine=False, eps=1e-6)
-        #self.linear = nn.Linear(hidden_size, nodes_size, bias=True)
         self.embedding_params = nn.Parameter(torch.zeros(nodes_size*hidden_size, nodes_size))
 
         self.adaLN_modulation = nn.Sequential(
@@ -230,14 +197,8 @@ class DiT(nn.Module):
         self.num_heads = num_heads
         self.time_embedding_size = time_embedding_size
 
-        self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)                 
-        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size, mlp_ratio=mlp_ratio, frequency_embedding_size=time_embedding_size)                                             
-        self.c_embedder = ConditionEmbedder(nodes_size, hidden_size)               
-
-        # Embedders should probably be nn.Embedding and not MLPs
-        # MLPs embed the data with dependencies between the inputs
-        # Embeddings are just a lookup table
-        # they should be independent before the model
+        self.x_embedder = InputEmbedder(nodes_size=nodes_size, hidden_size=hidden_size)
+        self.t_embedder = TimestepEmbedder(nodes_size, hidden_size, mlp_ratio=mlp_ratio, frequency_embedding_size=time_embedding_size)
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, nodes_size, mlp_ratio=mlp_ratio) for _ in range(depth)
