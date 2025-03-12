@@ -119,7 +119,7 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
     # Mask to evaluate Posterior
     mask = torch.zeros_like(val_dataset[0])
     mask[6:] = 1
-    val_theta, val_x = val_dataset[:1_000, :6], val_dataset[:1_000, 6:]
+    val_theta, val_x = val_dataset[:100*world_size, :6], val_dataset[:100*world_size, 6:]
 
     val_x_sampler = DistributedSampler(val_x, num_replicas=world_size, rank=rank, shuffle=False)
     val_x_DL = DataLoader(val_x, batch_size=1000, shuffle=False, sampler=val_x_sampler)
@@ -127,17 +127,37 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
     dist.barrier()
     
     theta_hat_samples = model.module.sample_hybrid(val_x_DL, condition_mask=mask, device=device, verbose=(rank==0), num_samples=1000, timesteps=100, )
-    #theta_hat = theta_hat.mean(dim=1)[:,:6].contiguous()
     
+    sample_indices = list(range(len(val_x)))
+    gpu_indices = sample_indices[val_x_sampler.rank:val_x_sampler.total_size:val_x_sampler.num_replicas]
+    theta_hat_np = theta_hat_samples[:,:,:6].contiguous().cpu().numpy()
+    val_theta_np = val_theta[gpu_indices].cpu().numpy()
+
+    # Log Prob
+    def calc_log_prob(samples, theta):
+        try:
+            kde = gaussian_kde(samples.T)
+            return kde.logpdf(theta).item()
+        except:
+            return -1e20
+        
+    log_probs = np.array([calc_log_prob(theta_hat_np[i], val_theta_np[i]) for i in range(len(theta_hat_np))])
     dist.barrier()
 
     # Gather all theta_hat tensors from all GPUs
+    log_probs = torch.from_numpy(log_probs).to(device)
     gathered_theta_hat = [torch.zeros_like(theta_hat_samples) for _ in range(world_size)]
+    gathered_log_probs = [torch.zeros_like(log_probs) for _ in range(world_size)]
     dist.all_gather(gathered_theta_hat, theta_hat_samples)
+    
+    dist.all_gather(gathered_log_probs, log_probs)
 
     dist.barrier()
 
     if rank == 0:
+        gathered_log_probs = [tensor.to("cpu").numpy() for tensor in gathered_log_probs]
+        mean_log_prob = -np.mean(gathered_log_probs)
+
         gathered_theta_hat = [tensor.to("cpu") for tensor in gathered_theta_hat]
         gathered_theta_hat = torch.cat(gathered_theta_hat, dim=0)
         # theta_hat = gathered_theta_hat.mean(dim=1)[:,:6].contiguous()
@@ -149,16 +169,7 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
         thetas_np = gathered_theta_hat[:,:,:6].contiguous().cpu().numpy()
         val_theta_np = val_theta.cpu().numpy()
         
-        # Log Prob
-        def log_prob(samples, theta):
-            try:
-                kde = gaussian_kde(samples.T)
-                return kde.logpdf(theta).item()
-            except:
-                return -1e20
-
-        log_probs = np.array([log_prob(thetas_np[i], val_theta_np[i]) for i in range(len(thetas_np))])
-        mean_log_prob = -np.mean(log_probs)
+        
 
         # measure tarp
         ecp, alpha = tarp.get_tarp_coverage(
@@ -173,6 +184,8 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
         result_dict['mean_log_prob'] = mean_log_prob
         result_dict['tarp_diff'] = tarp_diff
 
+    dist.barrier()
+
     dist.destroy_process_group()
 
 # -------------------------------------
@@ -185,7 +198,7 @@ def objective(trial):
         sigma = trial.suggest_float('sigma', 1.1, 30.0)
         depth = trial.suggest_int('depth', 1, 12)
         num_heads = trial.suggest_int('num_heads', 1, 32)
-        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,512)
+        hidden_size_factor = trial.suggest_int('hidden_size_factor', 1,256)
         hidden_size = num_heads*hidden_size_factor
         mlp_ratio = trial.suggest_int('mlp_ratio', 1, 10)
         cfg_prob = trial.suggest_float('cfg_prob', 0.0, 1.0)
@@ -232,5 +245,5 @@ if __name__ == "__main__":
     storage_name = 'sqlite:///ModelTransfuser_Chempy.db'
     study = optuna.create_study(study_name=study_name, storage=storage_name,directions=['minimize', 'minimize'], load_if_exists=True)
     study = optuna.load_study(study_name=study_name, storage=storage_name)
-    study.optimize(objective,n_trials=10, callbacks=[MaxTrialsCallback(1000)])
+    study.optimize(objective, callbacks=[MaxTrialsCallback(1000)])
     
