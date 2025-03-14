@@ -2,3 +2,4 @@ data/Chempy_data/*
 data/models/*
 Chempy/
 .vscode/
+src_new/

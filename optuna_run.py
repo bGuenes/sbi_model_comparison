@@ -168,8 +168,6 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
         # Convert to numpy and add required dimension for bootstrap
         thetas_np = gathered_theta_hat[:,:,:6].contiguous().cpu().numpy()
         val_theta_np = val_theta.cpu().numpy()
-        
-        
 
         # measure tarp
         ecp, alpha = tarp.get_tarp_coverage(
@@ -177,9 +175,9 @@ def ddp_main(gpu, world_size, batch_size, max_epochs, sigma, depth, hidden_size,
             norm=True, bootstrap=True,
             num_bootstrap=100
         )
-        tarp_val = np.mean(ecp[:,ecp.shape[1]//2])
-        tarp_diff = abs(tarp_val-0.5)
-        
+        # tarp_val = np.mean(ecp[:,ecp.shape[1]//2])
+        # tarp_diff = abs(tarp_val-0.5)
+        tarp_diff = np.abs(ecp-np.linspace(0,1,ecp.shape[1])).max()
         # Store results in shared dictionary
         result_dict['mean_log_prob'] = mean_log_prob
         result_dict['tarp_diff'] = tarp_diff
@@ -229,6 +227,7 @@ def objective(trial):
 if __name__ == "__main__":
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
+    os.environ['NCCL_TIMEOUT_SEC'] = '1800'  # 30 minutes
 
     parser = argparse.ArgumentParser()
 
@@ -241,7 +240,7 @@ if __name__ == "__main__":
     world_size = len(args.gpus.split(','))
 
     # Optuna
-    study_name = 'ModelTransfuser_Chempy_hybrid_sampler'  # Unique identifier of the study.
+    study_name = 'ModelTransfuser_Chempy_hybrid_sampler_tarp'  # Unique identifier of the study.
     storage_name = 'sqlite:///ModelTransfuser_Chempy.db'
     study = optuna.create_study(study_name=study_name, storage=storage_name,directions=['minimize', 'minimize'], load_if_exists=True)
     study = optuna.load_study(study_name=study_name, storage=storage_name)

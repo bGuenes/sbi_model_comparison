@@ -311,15 +311,15 @@ class ModelTransfuser(nn.Module):
     # ------------------------------------
     # /////////// Advanced Sampling ///////////
 
-    def _get_score(self, x, t, condition_mask, cfg_alpha=None, temperature=1.0):
+    def _get_score(self, x, t, condition_mask, cfg_alpha=None):
         """Get score estimate with optional classifier-free guidance"""
         # Get conditional score
-        score_cond = self.model(x=x, t=t, c=condition_mask) / temperature
+        score_cond = self.model(x=x, t=t, c=condition_mask)
         score_cond = self.output_scale_function(t, score_cond)
         
         # Apply classifier-free guidance if requested
         if cfg_alpha is not None:
-            score_uncond = self.model(x=x, t=t, c=torch.zeros_like(condition_mask)) / temperature
+            score_uncond = self.model(x=x, t=t, c=torch.zeros_like(condition_mask))
             score_uncond = self.output_scale_function(t, score_uncond)
             score = score_uncond + cfg_alpha * (score_cond - score_uncond)
         else:
@@ -327,12 +327,12 @@ class ModelTransfuser(nn.Module):
             
         return score
 
-    def _corrector_step(self, x, t, condition_mask, steps, snr, cfg_alpha=None, temperature=1.0):
+    def _corrector_step(self, x, t, condition_mask, steps, snr, cfg_alpha=None):
         """Corrector steps using Langevin dynamics"""
         for _ in range(steps):
             # Get score estimate
             with torch.no_grad():
-                score = self._get_score(x, t, condition_mask, cfg_alpha, temperature)
+                score = self._get_score(x, t, condition_mask, cfg_alpha)
             
             # Langevin dynamics update
             noise_scale = torch.sqrt(snr * 2 * self.sde.marginal_prob_std(t)**2)
@@ -345,7 +345,7 @@ class ModelTransfuser(nn.Module):
         return x
 
     def _hybrid_sampler(self, data, condition_mask=None, timesteps=30, num_samples=1_000, corrector_steps=5, 
-                    order=2, snr=0.1, final_corrector_steps=3, temperature=1.0, device="cpu",
+                    order=2, snr=0.1, final_corrector_steps=3, device="cpu",
                     cfg_alpha=None, verbose=True):
         """
         Hybrid sampling approach combining DPM-Solver with Predictor-Corrector refinement.
@@ -387,7 +387,7 @@ class ModelTransfuser(nn.Module):
                 
                 # Get score at current timestep
                 with torch.no_grad():
-                    score_t = self._get_score(x[n,:], t_now.reshape(-1, 1), condition_mask_samples[n,:], cfg_alpha, temperature)
+                    score_t = self._get_score(x[n,:], t_now.reshape(-1, 1), condition_mask_samples[n,:], cfg_alpha)
                 
                 # ------- PREDICTOR: DPM-Solver update -------
                 # First-order update
@@ -400,7 +400,7 @@ class ModelTransfuser(nn.Module):
                 if order >= 2 and i < timesteps - 1:
                     # Get score at the predicted point
                     with torch.no_grad():
-                        score_next = self._get_score(x_pred, t_next.reshape(-1, 1), condition_mask_samples[n,:], cfg_alpha, temperature)
+                        score_next = self._get_score(x_pred, t_next.reshape(-1, 1), condition_mask_samples[n,:], cfg_alpha)
                     
                     # Second-order correction
                     x_pred = x[n,:] - 0.5 * (t_now - t_next) * (
@@ -419,11 +419,11 @@ class ModelTransfuser(nn.Module):
                         steps = corrector_steps * 2  # More steps at the end
                         
                     x[n,:] = self._corrector_step(x[n,:], t_next.reshape(-1, 1), condition_mask_samples[n,:], 
-                                        steps, snr, cfg_alpha, temperature)
+                                        steps, snr, cfg_alpha)
             
         return x.detach()
     
-    def sample_hybrid(self, data, condition_mask=None, temperature=1.0, timesteps=30, 
+    def sample_hybrid(self, data, condition_mask=None, timesteps=30, 
                     corrector_steps=5, order=2, snr=0.1, final_corrector_steps=3,
                     num_samples=1_000, device="cpu", cfg_alpha=None, verbose=True):
         """
@@ -432,7 +432,6 @@ class ModelTransfuser(nn.Module):
         Args:
             data: Input data
             condition_mask: Binary mask indicating observed values (1) and latent values (0)
-            temperature: Sampling temperature (lower = less diversity)
             timesteps: Number of diffusion steps
             corrector_steps: Number of Langevin MCMC steps per iteration
             order: Order of DPM-Solver (1 or 2)
@@ -457,7 +456,7 @@ class ModelTransfuser(nn.Module):
                 
                 samples = self._hybrid_sampler(data_batch, condition_mask_batch, timesteps, num_samples,
                                         corrector_steps, order, snr, final_corrector_steps,
-                                        temperature, device, cfg_alpha, verbose)
+                                        device, cfg_alpha, verbose)
             return samples
         else:
             if len(data.shape) == 1:
@@ -467,7 +466,7 @@ class ModelTransfuser(nn.Module):
         
             samples = self._hybrid_sampler(data, condition_mask, timesteps, num_samples,
                                         corrector_steps, order, snr, final_corrector_steps,
-                                        temperature, device, cfg_alpha, verbose)
+                                        device, cfg_alpha, verbose)
             
             return samples
 

@@ -27,6 +27,25 @@ class VESDE():
             return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * torch.log(self.sigma)))
         except:
             return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * np.log(self.sigma)))
+        
+    def alpha_t(self, t):
+        """
+        Compute alpha_t for VESDE, which is always 1.
+        """
+        return torch.ones_like(t)
+    
+    def sigma_t(self, t):
+        """
+        Compute sigma_t (noise standard deviation).
+        """
+        return self.marginal_prob_std(t)
+    
+    def lambda_t(self, t):
+        """
+        Compute lambda_t = -log(sigma_t) / 2.
+        """
+        sigma_t = self.sigma_t(t)
+        return -0.5 * torch.log(sigma_t ** 2)
 
 
 class VPSDE():

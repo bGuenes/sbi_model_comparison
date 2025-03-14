@@ -10,7 +10,8 @@ import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 
-from src.ModelTransfuser_cfg import ModelTransfuser
+# from src.ModelTransfuser_cfg import ModelTransfuser
+from src.ModelTransfuser_sampling import ModelTransfuser
 
 def load_data():
     # -------------------------------------

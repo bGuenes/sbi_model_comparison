@@ -80,16 +80,16 @@ def load_data(batch_size=64):
 
 if __name__ == "__main__":
     # Load data
-    batch_size = 64
+    batch_size = 1028
     train_data, val_data = load_data(batch_size=batch_size)
 
     # Setup model
-    model = ModelTransfuser(14)
+    model = ModelTransfuser(14, depth=8, hidden_size=96, mlp_ratio=8, sigma=10)
 
-    device = torch.device("cuda:5")
+    device = torch.device("cuda:0")
 
     # Train model
-    model.train(train_data, val_data=val_data, batch_size=batch_size, epochs=100, device=device, checkpoint_path="data/models/cfg2")
+    model.train(train_data, val_data=val_data, batch_size=batch_size, cfg_prob=0.24, device=device, checkpoint_path="data/models/optuna_3_29/")
     model.save("data/models/cfg2/ModelTransfuser_cfg.pickle")
 
     epoch = np.arange(0, len(model.train_loss))
