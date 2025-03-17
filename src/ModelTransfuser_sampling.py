@@ -1,5 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
 
 import schedulefree
 
@@ -7,6 +10,7 @@ import numpy as np
 
 import pickle
 import sys
+import os
 import tqdm
 import time
 
@@ -45,7 +49,7 @@ class ModelTransfuser(nn.Module):
             self.sde = VPSDE()
         else:
             raise ValueError("Invalid SDE type")
-
+        
         # define model
         self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
                                        depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
@@ -263,10 +267,30 @@ class ModelTransfuser(nn.Module):
             method: Sampling method to use (euler, dpm)
             save_trajectory: Whether to save the intermediate denoising trajectory
         """
+
         if multi_obs_inference == False:
-            samples = self.sampler.sample(data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, multi_obs_inference=multi_obs_inference,
-                                      order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
-                                      verbose=verbose, method=method, save_trajectory=save_trajectory)
+            if device == "cuda":
+                world_size = torch.cuda.device_count()
+                if world_size > 1:
+                    os.environ['MASTER_ADDR'] = 'localhost'
+                    os.environ["MASTER_PORT"] = "29500"
+
+                    manager = mp.Manager()
+                    result_dict = manager.dict()
+                    #mp.set_start_method('spawn', force=True)
+                    mp.spawn(self.sampler.sample, 
+                            args=(world_size, data, condition_mask, timesteps, eps, num_samples, cfg_alpha,
+                                    order, snr, corrector_steps_interval, corrector_steps, final_corrector_steps,
+                                    device, verbose, method, save_trajectory, result_dict), 
+                            nprocs=world_size, join=True)
+                    samples = result_dict.get('samples', None)
+                    manager.shutdown()
+                    return samples
+
+                else:
+                    samples = self.sampler.sample(rank=0, world_size=1, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
+                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                            verbose=verbose, method=method, save_trajectory=save_trajectory)
         else:
             samples = self.multi_obs_sampler.sample(data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, multi_obs_inference=multi_obs_inference,
                                       order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,

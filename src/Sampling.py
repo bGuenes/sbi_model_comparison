@@ -1,5 +1,7 @@
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 import numpy as np
 import tqdm
 
@@ -13,7 +15,7 @@ class TensorTupleDataset(Dataset):
         return len(self.tensor1)
     
     def __getitem__(self, idx):
-        return self.tensor1[idx], self.tensor2[idx]
+        return self.tensor1[idx], self.tensor2[idx], idx
 
 #################################################################################################
 # ////////////////////////////////////////// Sampling //////////////////////////////////////////
@@ -23,7 +25,44 @@ class Sampling():
         self.MTf = MTf
         # Get SDE from model for calculations
         self.sde = self.MTf.sde
+            
+    #############################################
+    # ----- Multi-GPU setup -----
+    #############################################
 
+    def _set_distributed(self, rank, world_size):
+        self.rank = rank
+        self.world_size = world_size
+
+        # If using multiple GPUs, wrap model in DDP
+        if self.world_size > 1:
+            self.MTf.model = DDP(self.MTf.model, 
+                                device_ids=[self.rank],
+                                output_device=self.rank)
+            
+    def _gather_samples(self, all_samples, indices, result_dict):
+        # Gather samples from all processes
+        # Convert the list of tensors to a single tensor
+        samples = torch.cat(all_samples, dim=0).to(self.device)
+        indices = torch.cat(indices, dim=0).to(self.device)
+
+        # Create empty tensors to gather results across processes
+        gathered_samples = [torch.zeros_like(samples) for _ in range(self.world_size)]
+        gathered_idx = [torch.zeros_like(indices) for _ in range(self.world_size)]
+
+        # Gather data from all processes
+        dist.all_gather(gathered_samples, samples)
+        dist.all_gather(gathered_idx, indices)
+
+        if self.rank == 0:
+            # Sort results by index
+            gathered_idx = torch.cat(gathered_idx, dim=0)
+            gathered_samples = torch.cat(gathered_samples, dim=0)
+            _, sort_idx = gathered_idx.sort()
+            samples = gathered_samples[sort_idx]
+
+            result_dict['samples'] = samples.cpu()
+        
     #############################################
     # ----- Standard Functions -----
     #############################################
@@ -42,9 +81,6 @@ class Sampling():
                 score = score_uncond + cfg_alpha * (score_cond - score_uncond)
             else:
                 score = score_cond
-
-            if self.multi_observation:
-                score = self._compositional_score(score, t, self.hierarchy)
                 
         return score
 
@@ -60,35 +96,37 @@ class Sampling():
             condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
 
         return data, condition_mask
-        
-    def _check_data_structure(self, data, condition_mask=None, batch_size=1e3):
-        # Check if data is a DataLoader
-        # Convert if necessary
-        if not isinstance(data, torch.utils.data.DataLoader):
-            if condition_mask is None:
-                raise ValueError("Condition mask must be provided if data is not a DataLoader.")
-            
-            data, condition_mask = self._check_data_shape(data, condition_mask)
-            dataset_cond = TensorTupleDataset(data, condition_mask)
-            data_loader = DataLoader(dataset_cond, batch_size=int(batch_size), shuffle=False)
-            return data_loader
-        
-        else:
-            data_iter = iter(data)
-            batch = next(data_iter)
 
-            # Check if data is a tuple
-            if isinstance(batch, tuple):
-                return data
-            else:
-                data, condition_mask = self._check_data_shape(batch)
-                dataset_cond = TensorTupleDataset(data, condition_mask)
-                data_loader = DataLoader(dataset_cond, batch_size=int(batch_size), shuffle=False)
-                return data_loader
+    def _check_data_structure(self, data, condition_mask, batch_size=1e3):
+        # Convert data to DataLoader
+        
+        data, condition_mask = self._check_data_shape(data, condition_mask)
+        dataset_cond = TensorTupleDataset(data, condition_mask)
+        
+        # Use DistributedSampler for multi-GPU
+        if self.world_size > 1:
+            sampler = DistributedSampler(
+                dataset_cond, 
+                num_replicas=self.world_size, 
+                rank=self.rank
+            )
+            data_loader = DataLoader(
+                dataset_cond, 
+                batch_size=int(batch_size), 
+                sampler=sampler, 
+                pin_memory=True,
+                shuffle=False
+            )
+        else:
+            data_loader = DataLoader(dataset_cond, batch_size=int(batch_size), shuffle=False)
+        
+        num_observations = dataset_cond.__len__()
+
+        return data_loader, num_observations
 
     def _prepare_data(self, batch, num_samples, device):
         # Expand data and condition mask to match num_samples
-        data, condition_mask = batch
+        data, condition_mask, idx = batch
         data = data.to(device)
         condition_mask = condition_mask.to(device)
 
@@ -99,37 +137,26 @@ class Sampling():
         if torch.sum(condition_mask==1).item()!=0:
             joint_data[condition_mask==1] = data.flatten()
 
-        return joint_data, condition_mask
+        return joint_data, condition_mask, idx
     
     def _initial_sample(self, data, condition_mask):
         # Initialize with noise
         # Draw samples from initial noise distribution for latent variables
         # Keep observed variables fixed
 
-        if self.multi_observation:
-            # In case for compositional score modeling the random samples need to be the same across all samples
-            random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn(data.shape[1], data.shape[2], device=self.device).unsqueeze(0).repeat(data.shape[0],1,1) * (1-condition_mask)
-        else:
-            random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
+        random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
 
         data += random_noise_samples
         return data
+
     
-    def _compositional_score(self, scores, t, hierarchy):
-        prefactor = 0#(1 - len(scores))*(1 - t) # MISSING: score of prior
-        compositional_scores = prefactor + torch.sum(scores, dim=0)
-        compositional_scores = compositional_scores.repeat(len(scores), 1, 1)
-        scores[:,:,hierarchy] = compositional_scores[:,:,hierarchy]
-
-        return scores
-
     #############################################
     # ----- Main Sampling Loop -----
     #############################################
     
-    def sample(self, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False,
+    def sample(self, rank, world_size, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
-               device="cpu", verbose=True, method="dpm", save_trajectory=False):
+               device="cpu", verbose=True, method="dpm", save_trajectory=False, result_dict=None):
         """
         Sample from the model using the specified method
 
@@ -145,10 +172,6 @@ class Sampling():
             eps: End time for diffusion process
             num_samples: Number of samples to generate
             cfg_alpha: Classifier-free guidance strength
-            multi_obs_inference: Whether to do bayesian inference with compositional data
-                    False: Standard sampling
-                    True: Multi-observation sampling on all latent variables
-                    List of indices: Compositional indices
 
             - DPM-Solver parameters -
             order: Order of DPM-Solver (1, 2 or 3)
@@ -163,16 +186,38 @@ class Sampling():
             method: Sampling method to use (euler, dpm)
             save_trajectory: Whether to save the intermediate denoising trajectory
         """
-        
+
+        # Set distributed parameters
+        if world_size > 1:
+            dist.init_process_group(
+                backend='nccl',
+                init_method='env://',
+                world_size=world_size,
+                rank=rank
+            )
+
+            # Move model to device and set to eval mode
+            self.MTf.model.eval()
+            self.device = torch.device(f'cuda:{rank}')
+            self.MTf.to(self.device)
+            self.model = DDP(self.MTf.model,
+                             device_ids=[rank])
+        else:
+            self.model = self.MTf.model
+            self.model.eval()
+            self.device = device
+            self.model.to(self.device)
+
         # Set parameters
+        self.rank = rank
+        self.world_size = world_size
         self.timesteps = timesteps
-        self.timesteps_list = torch.linspace(1., eps, timesteps, device=device)
+        self.timesteps_list = torch.linspace(1., eps, timesteps, device=self.device)
         self.dt = self.timesteps_list[0] - self.timesteps_list[1]
         self.eps = eps
-        self.num_samples = num_samples
+        self.num_samples = int(num_samples)
         self.cfg_alpha = cfg_alpha
-        self.verbose = verbose
-        self.device = device
+        self.verbose = verbose and self.rank == 0
         self.method = method
         self.save_trajectory = save_trajectory
 
@@ -183,27 +228,15 @@ class Sampling():
             self.snr = snr
             self.order = order
 
-        if multi_obs_inference != False:
-            if multi_obs_inference == True:
-                self.multi_observation = True
-                self.hierarchy = torch.where(condition_mask[0] == 0)[0].tolist()
-            else:
-                self.multi_observation = True
-                self.hierarchy = multi_obs_inference
-
         # Check data structure
-        data_loader = self._check_data_structure(data, condition_mask)
-        
-        # Move model to device and set to eval mode
-        self.MTf.model.eval()
-        self.MTf.to(self.device)
+        data_loader, self.num_observations = self._check_data_structure(data, condition_mask)
         
         # Loop over data samples
         all_samples = []
+        indices = []
         for batch in data_loader:
-            
             # Prepare data for sampling
-            data_batch, condition_mask_batch = self._prepare_data(batch, num_samples, device)
+            data_batch, condition_mask_batch, idx = self._prepare_data(batch, num_samples, self.device)
 
             # Draw samples from initial noise distribution
             data_batch = self._initial_sample(data_batch, condition_mask_batch)
@@ -220,11 +253,19 @@ class Sampling():
             else:
                 raise ValueError(f"Sampling method {method} not recognized.")
 
+            # Store samples
             all_samples.append(samples)
+            indices.append(idx)
             
-        # Return concatenated samples
-        return torch.cat(all_samples, dim=0) if len(all_samples) > 1 else all_samples[0]
-    
+        # Collect results from all processes if distributed
+        if self.world_size > 1:
+            dist.barrier()
+            self._gather_samples(all_samples, indices, result_dict)
+
+        else:
+            samples = torch.cat(all_samples, dim=0)
+            return samples
+        
     #############################################
     # ----- Basic Sampling -----
     #############################################

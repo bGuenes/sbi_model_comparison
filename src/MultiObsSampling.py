@@ -132,7 +132,7 @@ class MultiObsSampling():
         prefactor = 0#(1 - len(scores))*(1 - t) # MISSING: score of prior
         compositional_scores = prefactor + torch.sum(scores, dim=0)
         compositional_scores = compositional_scores.repeat(len(scores), 1, 1)
-        scores[:,:,hierarchy] = compositional_scores[:,:,hierarchy]
+        scores[:,:,hierarchy] = compositional_scores[:,:,hierarchy]/len(scores)
 
         return scores
 
