@@ -4,6 +4,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import numpy as np
 import tqdm
+import datetime
 
 class TensorTupleDataset(Dataset):
     def __init__(self, tensor1, tensor2):
@@ -193,7 +194,8 @@ class Sampling():
                 backend='nccl',
                 init_method='env://',
                 world_size=world_size,
-                rank=rank
+                rank=rank,
+                timeout=datetime.timedelta(seconds=100_000_000)
             )
 
             # Move model to device and set to eval mode

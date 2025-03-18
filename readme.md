@@ -1,7 +1,12 @@
-# Bayesian model comparison with score-based diffusion SBI
+# Bayesian Model Comparison with Simulation-Based Inference
 
-We use a [score-based diffusion model](https://arxiv.org/abs/2011.13456) with [transformer](https://arxiv.org/abs/1706.03762) architecture ([simformer](https://arxiv.org/abs/2404.09636)) to do SBI for [model comparison](https://academic.oup.com/rasti/article/2/1/710/7382245). <br>
+This repo explores a novel approach to Simulation-Based Inference (SBI) and Bayesian Model Comparisan by leveraging a [**score-based diffusion model**](https://arxiv.org/abs/2011.13456) combined with a [**transformer architecture**](https://arxiv.org/abs/1706.03762) [[Peebles et al.](https://arxiv.org/abs/2212.09748), [Gloecker et al.](https://arxiv.org/abs/2404.09636)]. <br>
+The model utilizes an **attention mask** to conditionally predict both the **posterior distribution** and the **likelihood** of the data. <br>
+By employing the [**harmonic mean estimator**](https://academic.oup.com/rasti/article/2/1/710/7382245), we efficiently compute the **evidence** required for **Bayesian model comparison**. <br>
 
+This framework is applied to compare different yield sets in a simulator for stellar abundances from galactic and stellar parameters ([**CHEMPY**](https://arxiv.org/pdf/1909.00812)), providing a robust and scalable method for likelihood-free inference in high-dimensional parameter spaces.
+
+### Workflow
 ``` mermaid
 flowchart LR
     A@{label: "Simulation Data", shape: cyl} --> |train| B(Diffusion Model)
@@ -23,15 +28,15 @@ flowchart LR
 ---
 ## Diffusion Model
 
-### Perturbing Data with a Diffusion Process
-For the training of the simformer we have to first turn our data into noise and then train the diffusion model to denoise it for every timestep. <br>
+### Perturbing Data in a Diffusion Process
+For the training of the diffusion model we have to first turn our data into noise and then train the transformer to denoise it step by step for every timestep. <br>
 The diffusion process is defined by the following equation:
 
 $$
 d\mathbf{x} = \mathbf{f}(\mathbf{x},t) dt + g(t) d\mathbf{w}
 $$
 
-where $\mathbf{f}(\cdot, t): \mathbb{R}^d \to \mathbb{R}^d$ is called the *drift coefficient* of the SDE, $g(t) \in \mathbb{R}$ is called the *diffusion coefficient*, and $\mathbf{w}$ represents the standard Brownian motion. <br>
+where $\mathbf{f}(\cdot, t): \mathbb{R}^d \to \mathbb{R}^d$ is called the *drift coefficient* of the stochastic differential equation (SDE), $g(t) \in \mathbb{R}$ is called the *diffusion coefficient*, and $\mathbf{w}$ represents the standard Brownian motion. <br>
 We use a Variance Exploding SDE (VESDE) for the diffusion process, where the *drift* and *diffusion coefficients* are defined as followed:
 
 $$
@@ -82,21 +87,22 @@ $$
 
 In this case, we use a transformer architecture to approximate the score function. <br>
 
-### Time-Dependent Score-Based Model
+### Time-Dependendent Score-Predicting Condition Transformer
+
 In theory there are no limitations on the model used to approximate the score function. However, as proposed in the [All-in-one Simualtion Based Inference](https://arxiv.org/abs/2404.09636) paper, we use a transformer architecture as they  overcome limitations of feed-forward networks in effectively dealing with sequential inputs. <br>
+In order to control the attention of the transformer to just conditional tokens, we use an attention mask to prevent latent tokens from attending to other latent tokens, that hold no information, as they are drawn from the initial noise distribution. <br>
+For that we use the diffusion transformer with adaptive layer normalization initialized at Zero (DiT with adaLN-Zero) as proposed in the [DiT paper](https://arxiv.org/abs/2212.09748). <br>
+Our model is modified to deal with continuos data and uses the timestep in the diffusion process as conditional information. <br>
+The attention mask in the Multi-Head Self Attention Layer controls the attention from latent tokens to just the observed tokens. <br>
 
-The transformer takes tokens as inputs and processes them in parallel. The transformer consists of an encoder and a decoder. The encoder processes the input tokens and the decoder processes the output tokens. The transformer uses self-attention to weigh the importance of each token in the input sequence. <br>
+![](plots/Readme/ConditionTransformer.jpeg)
 
-Our tokens are the data values $\mathbf{x}$, the embedded nodes, condition mask and the time $t$. 
+By providing the transformer with the joint $(\theta, \mathbf{x})$ as input, it is possible to use the model as NPE and NLE. <br>
 
-|| Node ID | Values | Condition Mask | Time |
-|-------------------------|:-------------------------:| :-------------------------:| :-------------------------:|:-------------------------:|
-||Unique ID for every Value | Joint data $\hat{x}$ | Binary Condition indicating observed or latent | Time in diffusion process|
-| **Shape** | `(batch_size,sequence_length)` | `(batch_size,sequence_length,1)` | `(batch_size,sequence_length,1)` | `(batch_size,1)` |
-| **Example** | `[0, 1, 2]`<br>`[0, 1, 2]`<br>`[0, 1, 2]` | `[[0.1], [0.2], [0.3]]`<br>`[[1.1], [1.2], [1.3]]`<br>`[[2.1], [2.2], [2.3]]` | `[[0], [0], [1]]`<br>`[[0], [1], [1]]`<br>`[[1], [0], [1]]` | `[10]`<br>`[25]`<br>`[99]` |
-| **Embedding**        | Embedded over `dim_id=20` using [`nn.Embedding()`](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) | Repeated across `dim_values=20` | Embedded over `dim_condition=10` learnable parameters | Embedded over `dim_time=64` using [`GaussianFourierEmbedding`](https://arxiv.org/abs/2006.10739) |
-
-The tokens are passed through the [`nn.Transformer()`](https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html) and then decoded in an output layer to estimate the score for each value. <br>
+The data is embedded by projecting it into a high-dimensional space using an embedding layer. <br>
+The timestep is embedded using a Gaussian Fourier Embedding.
+The condition mask $\mathcal{M}_C$ is a binary mask that indicates which values are observed and which are latent. <br>
+A condition value of $\mathcal{M}_C ^{(i)} = 0$ corresponds to a latent value, that needs to be inferred and a condition value of $\mathcal{M}_C ^{(i)} = 1$ corresponds to an observed value, which the model can use to infer the latent values. <br>
 
 ### Training
 
@@ -128,10 +134,9 @@ The training process follows these steps:
 7. Update $\theta$ using gradient-based method with $\nabla_ {\theta}\mathcal{L}(\theta)$
 
 ### Sampling
-
-We use the Euler-Maruyama method to solve the SDE. 
-The Euler-Maruyama method is a simple and widely used method to solve SDEs. 
-It is a first-order method that approximates the solution of an SDE by discretizing the time interval into small steps. <br>
+#### Euler-Maruyama
+To solve the reverse SDE we can use the Euler-Maruyama method. <br>
+The Euler-Maruyama method is a simple first-order solver that approximates the solution of an SDE by discretizing the time interval into small steps and is a widely used method to solve SDEs.
 
 $$
 \mathbf{x}_ {t+1} = \mathbf{x}_ t + \mathbf{f}(\mathbf{x}_ t,t) \Delta t + g(t) \Delta \mathbf{w}
@@ -158,15 +163,45 @@ Distribution Denoising | Single Sample Denoising
 :-------------------------:|:-------------------------:
 ![](plots/Readme/test_big.gif) | ![](plots/Readme/test_quiver.gif)
 
-### Conditining 
-In order to perfome inference, we need to tell the model which values are observed and which are latent. <br>
-We can do this by passing a condition mask $M_C$ into the tokenizer. <br>
-The condition mask is a binary mask that indicates which values are observed and which are latent. <br>
-A condition value of $M_C ^{(i)} = 0$ corresponds to a latent value, that needs to be inferred and a condition value of $M_C ^{(i)} = 1$ corresponds to an observed value, which the model can use to infer the latent values. <br>
-The condition mask is passed to the transformer as an additional token and embedded as described in the table above. <br>
+#### DPM-Solver
+The [DPM-Solver](https://arxiv.org/pdf/2206.00927) is a more sophisticated numerical method for solving the reverse SDE compared to Euler-Maruyama, by offering higher-order numerical integration for more accurate and efficient sampling.
 
-During inference we also need to pass a condition mask to the model. <br>
-After the score calculation we multiply it by $1-M_C$ to set the score of the observed values to zero and therefore not change them. <br>
+DPM-Solver works by approximating the reverse diffusion process using a deterministic ODE solver with the following key advantages:
+- **Higher-order integration**: Supports 1st, 2nd, and 3rd order methods for increased accuracy
+- **Faster convergence**: Typically requires fewer discretization steps than Euler-Maruyama
+- **Improved sample quality**: Produces cleaner, more accurate samples given the same number of steps
+
+The method can be implemented with different orders of accuracy:
+
+**First-order**:
+$$
+\mathbf{x}_{t-1} = \mathbf{x}_t - (t-t') \sigma_t s_{\theta}(\mathbf{x}_t, t)
+$$
+
+**Second-order**:
+$$
+\begin{align*}
+\mathbf{x}_{t'} &= \mathbf{x}_t - (t-t') \sigma_t s_{\theta}(\mathbf{x}_t, t) \\
+\mathbf{x}_{t-1} &= \mathbf{x}_t - \frac{1}{2}(t-t') (\sigma_t^2 s_{\theta}(\mathbf{x}_t, t) + \sigma_{t'}^2 s_{\theta}(\mathbf{x}_{t'}, t'))
+\end{align*}
+$$
+
+**Third-order**:
+Extends the approximation with additional intermediate points for even greater accuracy.
+
+Our implementation further enhances DPM-Solver with periodic **Langevin corrector steps**, which refines the solution using controlled stochasticity. The corrector applies several steps of Langevin dynamics:
+
+$$
+\mathbf{x} = \mathbf{x} + \text{snr} \cdot \sigma_t^2 \cdot s_{\theta}(\mathbf{x}, t) + \sqrt{\text{snr} \cdot 2 \cdot \sigma_t^2} \cdot \mathbf{z}
+$$
+
+where $\mathbf{z} \sim \mathcal{N}(0, \mathbf{I})$ and $\text{snr}$ is the signal-to-noise ratio that controls the step size.
+
+The combination of high-order DPM-Solver steps with periodic Langevin correction allows for:
+1. Fast, accurate evolution of the diffusion process (predictor)
+2. Stochastic refinement that helps explore the probability space (corrector)
+
+This hybrid approach produces high-quality samples with fewer function evaluations than the basic Euler-Maruyama method, especially when sampling complex distributions.
 
 ---
 ---
