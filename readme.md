@@ -161,7 +161,7 @@ These steps can be repeated to get a fully denoised sample $x_0$ at $t=0$. <br>
 
 Distribution Denoising | Single Sample Denoising
 :-------------------------:|:-------------------------:
-![](plots/Readme/test_big.gif) | ![](plots/Readme/test_quiver.gif)
+![](plots/Readme/denoising_euler1.gif) | ![](plots/Readme/denoising_euler2.gif)
 
 #### DPM-Solver
 The [DPM-Solver](https://arxiv.org/pdf/2206.00927) is a more sophisticated numerical method for solving the reverse SDE compared to Euler-Maruyama, by offering higher-order numerical integration for more accurate and efficient sampling.
@@ -202,6 +202,10 @@ The combination of high-order DPM-Solver steps with periodic Langevin correction
 2. Stochastic refinement that helps explore the probability space (corrector)
 
 This hybrid approach produces high-quality samples with fewer function evaluations than the basic Euler-Maruyama method, especially when sampling complex distributions.
+
+Distribution Denoising | Single Sample Denoising
+:-------------------------:|:-------------------------:
+![](plots/Readme/denoising_dpm1.gif) | ![](plots/Readme/denoising_dpm2.gif)
 
 ---
 ---

@@ -287,16 +287,17 @@ class ModelTransfuser(nn.Module):
                     manager.shutdown()
                     return samples
 
-                else:
-                    samples = self.sampler.sample(rank=0, world_size=1, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
-                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
-                                            verbose=verbose, method=method, save_trajectory=save_trajectory)
+            else:
+                samples = self.sampler.sample(rank=0, world_size=1, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
+                                        order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                        verbose=verbose, method=method, save_trajectory=save_trajectory)
+                return samples
         else:
             samples = self.multi_obs_sampler.sample(data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, multi_obs_inference=multi_obs_inference,
                                       order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                       verbose=verbose, method=method, save_trajectory=save_trajectory)
 
-        return samples
+            return samples
     
     # ------------------------------------
     # /////////// Save & Load ///////////
