@@ -348,7 +348,7 @@ class Sampling():
 
         # First-order step
         score_now = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
-        data_next = data_t - (t-t_next) * sigma_now * score_now * (1-condition_mask)
+        data_next = data_t + (t-t_next) * sigma_now * score_now * (1-condition_mask)
 
         return data_next
     
@@ -359,11 +359,11 @@ class Sampling():
 
         # First-order step
         score_half = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
-        data_half = data_t - (t-t_next) * sigma_now * score_half * (1-condition_mask)
+        data_half = data_t + (t-t_next) * sigma_now * score_half * (1-condition_mask)
 
         # Second-order step
         score_next = self._get_score(data_half, t_next, condition_mask, self.cfg_alpha)
-        data_next = data_t - 0.5 * (t-t_next) * (sigma_now**2 * score_half + sigma_next**2 * score_next) * (1-condition_mask)
+        data_next = data_t + 0.5 * (t-t_next) * (sigma_now**2 * score_half + sigma_next**2 * score_next) * (1-condition_mask)
 
         return data_next
     
@@ -379,19 +379,19 @@ class Sampling():
         score_t = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
         
         # First intermediate point (Euler step)
-        data_mid1 = data_t - (t - t_mid) * sigma_t * score_t * (1-condition_mask)
+        data_mid1 = data_t + (t - t_mid) * sigma_t * score_t * (1-condition_mask)
         
         # Get score at the first intermediate point
         score_mid1 = self._get_score(data_mid1, t_mid, condition_mask, self.cfg_alpha)
         
         # Second intermediate point (using first intermediate)
-        data_mid2 = data_t - (t - t_mid) * ((1/3) * sigma_t * score_t + (2/3) * sigma_mid * score_mid1) * (1-condition_mask)
+        data_mid2 = data_t + (t - t_mid) * ((1/3) * sigma_t * score_t + (2/3) * sigma_mid * score_mid1) * (1-condition_mask)
         
         # Get score at the second intermediate point
         score_mid2 = self._get_score(data_mid2, t_mid, condition_mask, self.cfg_alpha)
         
         # Final step using all information
-        data_next = data_t - (t - t_next) * ((1/4) * sigma_t * score_t + 
+        data_next = data_t + (t - t_next) * ((1/4) * sigma_t * score_t + 
                                             (3/4) * sigma_next * score_mid2) * (1-condition_mask)
         
         return data_next
@@ -414,7 +414,7 @@ class Sampling():
 
         if self.save_trajectory:
             # Storage for trajectory (optional)
-            self.data_t = torch.zeros(data.shape[0], self.timesteps+1, data.shape[1], data.shape[2])
+            self.data_t = torch.zeros(data.shape[0], self.timesteps, data.shape[1], data.shape[2])
             self.data_t[:,0,:,:] = data
 
         # Main sampling loop
@@ -436,7 +436,7 @@ class Sampling():
                 
                 # ------- CORRECTOR: Langevin MCMC steps -------
                 # Only apply corrector steps occasionally to save computation
-                if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - corrector_steps_interval):
+                if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - final_corrector_steps):
                     steps = corrector_steps
                     if i >= self.timesteps - final_corrector_steps:
                         steps = corrector_steps * 5  # More steps at the end
