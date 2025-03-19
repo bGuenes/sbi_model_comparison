@@ -174,15 +174,17 @@ DPM-Solver works by approximating the reverse diffusion process using a determin
 The method can be implemented with different orders of accuracy:
 
 **First-order**:
+
 $$
-\mathbf{x}_{t-1} = \mathbf{x}_t - (t-t') \sigma_t s_{\theta}(\mathbf{x}_t, t)
+\mathbf{x}_ {t-1} = \mathbf{x}_ t - (t-t') \sigma_t s_{\theta}(\mathbf{x}_t, t)
 $$
 
 **Second-order**:
+
 $$
 \begin{align*}
-\mathbf{x}_{t'} &= \mathbf{x}_t - (t-t') \sigma_t s_{\theta}(\mathbf{x}_t, t) \\
-\mathbf{x}_{t-1} &= \mathbf{x}_t - \frac{1}{2}(t-t') (\sigma_t^2 s_{\theta}(\mathbf{x}_t, t) + \sigma_{t'}^2 s_{\theta}(\mathbf{x}_{t'}, t'))
+\mathbf{x}_ {t'} &= \mathbf{x}_ t - (t-t') \sigma_t s_{\theta}(\mathbf{x}_ t, t) \\
+\mathbf{x}_ {t-1} &= \mathbf{x}_ t - \frac{1}{2}(t-t') (\sigma_t^2 s_{\theta}(\mathbf{x}_ t, t) + \sigma_{t'}^2 s_{\theta}(\mathbf{x}_{t'}, t'))
 \end{align*}
 $$
 

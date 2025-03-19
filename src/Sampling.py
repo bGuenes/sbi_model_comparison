@@ -439,7 +439,7 @@ class Sampling():
                 if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - corrector_steps_interval):
                     steps = corrector_steps
                     if i >= self.timesteps - final_corrector_steps:
-                        steps = corrector_steps * 2  # More steps at the end
+                        steps = corrector_steps * 5  # More steps at the end
                         
                     data[n,:] = self._corrector_step(data[n,:], t_next, condition_mask[n,:], 
                                                steps, snr, self.cfg_alpha)
