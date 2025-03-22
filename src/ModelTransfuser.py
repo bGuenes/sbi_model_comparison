@@ -1,5 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
 
 import schedulefree
 
@@ -7,17 +10,20 @@ import numpy as np
 
 import pickle
 import sys
+import os
 import tqdm
 import time
 
 from src.ConditionTransformer import DiT
 from src.Simformer import Transformer
 from src.sde import VESDE, VPSDE
+from src.Sampler import Sampler
+from src.MultiObsSampling import MultiObsSampling
 
-####################################################################################################################
+# --------------------------------------------------------------------------------------------------
 
 class ModelTransfuser(nn.Module):
-    ########################################
+    # ------------------------------------
     # /////////// Initialization ///////////
 
     def __init__(
@@ -43,15 +49,19 @@ class ModelTransfuser(nn.Module):
             self.sde = VPSDE()
         else:
             raise ValueError("Invalid SDE type")
-
+        
         # define model
         self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
                                        depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        
+        # Define Sampler
+        self.sampler = Sampler(self)
+        self.multi_obs_sampler = MultiObsSampling(self)
 
         # self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
         #                          depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
         
-    ##########################################
+    # ------------------------------------
     # /////////// Helper functions ///////////
 
     def forward_diffusion_sample(self, x_0, t, x_1=None, condition_mask=None):
@@ -77,7 +87,7 @@ class ModelTransfuser(nn.Module):
         return x / scale
     
     
-    #######################################
+    # ------------------------------------
     # /////////// Loss function ///////////
 
     def loss_fn(self, score, timestep, x_1, condition_mask):
@@ -99,202 +109,199 @@ class ModelTransfuser(nn.Module):
 
         return loss
     
-    ##################################
+    # ------------------------------------
     # /////////// Training ///////////
     
     def train(self, data, condition_mask_data=None, 
-                batch_size=64, epochs=10, lr=1e-3, device="cpu", 
+                batch_size=64, max_epochs=500, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 
-                verbose=True, checkpoint_path=None):
+                verbose=True, checkpoint_path=None, early_stopping_patience=20,
+                cfg_prob=0.2):
 
         start_time = time.time()
 
-        self.to(device)
         self.model.to(device)
         eps = 1e-3
 
-        # Define the optimizer
-        #optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         optimizer = schedulefree.AdamWScheduleFree(self.model.parameters(), lr=lr)
 
         self.train_loss = []
         self.val_loss = []
-
-        if condition_mask_data is None:
-        # If no condition mask is provided, eg to just train posterior or likelihood
-        # the condition mask is sampled randomly over all data points to be able to predict the likelihood or posterior and also be able to work with missing data
-            condition_mask_random_data = torch.distributions.bernoulli.Bernoulli(torch.ones_like(data) * 0.33)
-
-        if condition_mask_val is None and val_data is not None:
-            condition_mask_random_val = torch.distributions.bernoulli.Bernoulli(torch.ones_like(val_data) * 0.33)
-
         self.best_loss = torch.inf
         
-        # --------------------
-        # ----- Training -----
-        for epoch in range(epochs):
+        # --------------------------------------------------------------------------------------------------
+        # --- Training ---
+        for epoch in range(max_epochs):
             self.model.train()
             optimizer.train()
-            idx = torch.randperm(data.shape[0])
-            data_shuffled = data[idx,:]
-
             loss_epoch = 0
 
-            if condition_mask_data is None:
-                condition_mask_data = condition_mask_random_data.sample()
-            elif len(condition_mask_data.shape) == 1:
-                condition_mask_data = condition_mask_data.unsqueeze(0).repeat(data.shape[0], 1)
-            
-            for i in tqdm.tqdm(range(0, data_shuffled.shape[0], batch_size), desc=f'Epoch {epoch+1:{""}{2}}/{epochs}: ', disable=not verbose):
+            for batch in tqdm.tqdm(data, desc=f"Epoch {epoch+1}: ", disable=not verbose):
                 optimizer.zero_grad()
 
-                x_0 = data_shuffled[i:i+batch_size].to(device)
-                condition_mask_batch = condition_mask_data[i:i+batch_size].to(device)
+                # Expecting batch as (x_0, condition_mask) tuple; modify if needed
+                if isinstance(batch, (list, tuple)):
+                    x_0, condition_mask_batch = batch
+                else:
+                    x_0 = batch
+                    # If no condition mask in your dataloader, create one based on cfg_prob using random sampling
+                    condition_mask_batch = torch.distributions.bernoulli.Bernoulli(0.33).sample(x_0.shape)
 
-                # Pick random timesteps in diffusion process
-                timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps
+                x_0 = x_0.to(device)
+                condition_mask_batch = condition_mask_batch.to(device)
 
-                # Sample x_1 for unobserved data
-                x_1 = torch.randn_like(x_0)*(1-condition_mask_batch)+(condition_mask_batch)*x_0
+                # Classifier-free guidance
+                if cfg_prob is not None:
+                    rand = torch.rand(1).item()
+                    if rand < cfg_prob:
+                        condition_mask_batch = torch.zeros_like(condition_mask_batch)
 
-                # Calculate x_t for the sampled timestep
+                timestep = torch.rand(x_0.shape[0], 1, device=device) * (1. - eps) + eps
+
+                # Sample x_1 from the random noise
+                x_1 = torch.randn_like(x_0)*(1-condition_mask_batch) + (condition_mask_batch)*x_0
+                # Calculate x at time t in the diffusion process
                 x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
-
-                # Calculate score
+                # Calculate the score
                 out = self.model(x=x_t, t=timestep, c=condition_mask_batch)
                 score = self.output_scale_function(timestep, out)
-
-                # Calculate loss
+                # Calculate the loss
                 loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
                 loss_epoch += loss.item()
 
                 loss.backward()
-                #torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
-                
-            
-            self.train_loss.append(loss_epoch)
-            #torch.cuda.empty_cache()
 
-            # ----------------------
-            # ----- Validation -----
+            self.train_loss.append(loss_epoch)
+
+            # -----------------------------------------------------------------------------------------------
+            # --- Validation ---
             if val_data is not None:
                 self.model.eval()
                 optimizer.eval()
 
-                if condition_mask_val is None:
-                    # If no condition mask is provided, val on random condition mask
-                    condition_mask_val = condition_mask_random_val.sample()
-                elif len(condition_mask_val.shape) == 1:
-                    condition_mask_val = condition_mask_val.unsqueeze(0).repeat(val_data.shape[0], 1)
-
-                batch_size_val = 1000
                 val_loss = 0
-                for i in range(0, val_data.shape[0], batch_size_val):
-                    x_0 = val_data[i:i+batch_size_val].to(device)
-                    condition_mask_val_batch = condition_mask_val[i:i+batch_size_val].to(device)
+                for batch in val_data:
+                    if isinstance(batch, (list, tuple)):
+                        x_0, condition_mask_val_batch = batch
+                    else:
+                        x_0 = batch
+                        condition_mask_val_batch = torch.distributions.bernoulli.Bernoulli(0.33).sample(x_0.shape)
 
-                    # Pick random timesteps in diffusion process
-                    timestep = torch.rand(x_0.shape[0],1, device=device)* (1. - eps) + eps
+                    x_0 = x_0.to(device)
+                    condition_mask_val_batch = condition_mask_val_batch.to(device)
 
-                    # Sample x_1 for unobserved data
-                    x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch)+(condition_mask_val_batch)*x_0
+                    timestep = torch.rand(x_0.shape[0],1, device=device)*(1.-eps) + eps
 
-                    # Calculate x_t for the sampled timestep
+                    x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch) + (condition_mask_val_batch)*x_0
                     x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_val_batch)
-
-                    # Calculate score
                     out = self.model(x=x_t, t=timestep, c=condition_mask_val_batch)
                     score = self.output_scale_function(timestep, out)
-
-                    # Calculate loss
-                    loss = self.loss_fn(score, timestep, x_1, condition_mask_val_batch)
-                    val_loss += loss.item()
-
-                    if val_loss <= self.best_loss and checkpoint_path is not None:
-                        self.best_loss = val_loss
-                        self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
-                    
+                    val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
+                
                 self.val_loss.append(val_loss)
-                #torch.cuda.empty_cache()
 
+                if val_loss <= self.best_loss:
+                    self.best_loss = val_loss
+                    patience_counter = 0
+                    if checkpoint_path is not None:
+                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                else:
+                    patience_counter += 1
+                
                 if verbose:
-                    print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} --- Validation Loss: {val_loss:{""}{11}.3f} ---')
+                    print(f'--- Training Loss: {loss_epoch:11.3f} --- Validation Loss: {val_loss:11.3f} ---')
                     print()
-            # ----------------------
-
             else:
-                if loss_epoch <= self.best_loss and checkpoint_path is not None:
-                    self.best_loss = loss_epoch
-                    self.save(f"{checkpoint_path}/ModelTransfuser_best.pickle")
+                if val_loss <= self.best_loss:
+                    self.best_loss = val_loss
+                    patience_counter = 0
+                    if checkpoint_path is not None:
+                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
+                else:
+                    patience_counter += 1
 
+            if patience_counter >= early_stopping_patience:
                 if verbose:
-                    print(f'--- Training Loss: {loss_epoch:{""}{11}.3f} ---')
-                    print()
-        
+                    print(f"Early stopping triggered after {epoch+1} epochs")
+                break
+
         end_time = time.time()
         time_elapsed = (end_time - start_time) / 60
-        print(f"Training finished after {time_elapsed:.1f} minutes")
 
-    #################################
+        if verbose:
+            print(f"Training finished after {time_elapsed:.1f} minutes")
+
+    # ------------------------------------
     # /////////// Sample ///////////
-
-    def sample(self, data, condition_mask, temperature=1, timesteps=50, num_samples=1_000, device="cpu"):
-
-        self.model.eval()
-        self.model.to(device)
-        #self.to(device)
-
-        # Shaping
-        # Correct data shape is [Number of unique samples, Number of predicted samples for each unique sample, Number of values]
-        if len(data.shape) == 1:
-            data = data.unsqueeze(0)
-        if len(condition_mask.shape) == 1:
-            condition_mask = condition_mask.unsqueeze(0).repeat(data.shape[0], 1)
-
-        self.timesteps = timesteps
-
-        joint_data = torch.zeros_like(condition_mask)
-        if torch.sum(condition_mask==1).item()!=0:
-            joint_data[condition_mask==1] = data.flatten()
-
-        condition_mask_samples = condition_mask.unsqueeze(1).repeat(1,num_samples,1).to(device)
-
-        data = joint_data
         
-        x = data.unsqueeze(1).repeat(1,num_samples,1).to(device)
-        random_t1_samples = self.sde.marginal_prob_std(torch.ones_like(x)) * torch.randn_like(x) * (1-condition_mask_samples.to(device))
-        x += random_t1_samples
+    def sample(self, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False,
+               order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
+               device="cpu", verbose=True, method="dpm", save_trajectory=False):
+        """
+        Sample from the model using the specified method
+
+        Args:
+            data: Input data
+                    - Should be a DataLoader or a tuple of (data, condition_mask)
+                        - Shape data: (num_samples, num_observed_features)
+                        - Shape condition_mask: (num_samples, num_total_features)
+                    - Can also be a single tensor of data, in which case condition_mask must be provided
+            condition_mask: Binary mask indicating observed values (1) and latent values (0)
+                    Shape: (num_samples, num_total_features)
+            timesteps: Number of diffusion steps
+            eps: End time for diffusion process
+            num_samples: Number of samples to generate
+            cfg_alpha: Classifier-free guidance strength
+
+            - DPM-Solver parameters -
+            order: Order of DPM-Solver (1, 2 or 3)
+            snr: Signal-to-noise ratio for Langevin steps
+            corrector_steps_interval: Interval for applying corrector steps
+            corrector_steps: Number of Langevin MCMC steps per iteration
+            final_corrector_steps: Extra correction steps at the end
+
+            - Other parameters -
+            device: Device to run sampling on
+            verbose: Whether to show progress bar
+            method: Sampling method to use (euler, dpm)
+            save_trajectory: Whether to save the intermediate denoising trajectory
+        """
+
+        if multi_obs_inference == False:
+            if device == "cuda":
+                # Run sampling on all available GPUs
+                world_size = torch.cuda.device_count()
+                if world_size > 1:
+                    os.environ['MASTER_ADDR'] = 'localhost'
+                    os.environ["MASTER_PORT"] = "29500"
+
+                    manager = mp.Manager()
+                    result_dict = manager.dict()
+                    #mp.set_start_method('spawn', force=True)
+                    mp.spawn(self.sampler.sample, 
+                            args=(world_size, data, condition_mask, timesteps, eps, num_samples, cfg_alpha,
+                                    order, snr, corrector_steps_interval, corrector_steps, final_corrector_steps,
+                                    device, verbose, method, save_trajectory, result_dict), 
+                            nprocs=world_size, join=True)
+                    samples = result_dict.get('samples', None)
+                    manager.shutdown()
+
+            else:
+                # Run sampling on specified device
+                samples = self.sampler.sample(rank=0, world_size=1, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
+                                        order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                        verbose=verbose, method=method, save_trajectory=save_trajectory)
+        
+        if multi_obs_inference == True:
+            # Hierarchical Compositional Score Modeling
+            samples = self.multi_obs_sampler.sample(data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, multi_obs_inference=multi_obs_inference,
+                                      order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                      verbose=verbose, method=method, save_trajectory=save_trajectory)
+
+        return samples
     
-        
-        dt = (1/timesteps)
-        eps = 1e-3
-        time_steps = torch.linspace(1., eps, timesteps, device=device)
-
-        self.x_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
-        self.score_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
-        self.dx_t = torch.zeros(x.shape[0], timesteps+1, x.shape[1], x.shape[2])
-        self.x_t[:,0,:,:] = x
-        
-        for n in tqdm.tqdm(range(len(data))):
-
-            for i,t in enumerate(time_steps):
-                timestep = t.reshape(-1, 1).to(device) * (1. - eps) + eps
-                
-                out = self.model(x=x[n,:], t=timestep, c=condition_mask_samples[n]).squeeze(-1).detach()
-                out = out / temperature
-                score = self.output_scale_function(timestep, out)
-                dx = self.sigma**(2*timestep)* score * dt
-
-                x[n,:] = x[n,:] + dx * (1-condition_mask_samples[n,:])
-
-                self.x_t[n,i+1] = x[n,:]
-                self.dx_t[n,i] = dx
-                self.score_t[n,i] = score
-
-        return x.detach()
-    
-    #####################################
+    # ------------------------------------
     # /////////// Save & Load ///////////
 
     def save(self, path):

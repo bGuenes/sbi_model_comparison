@@ -21,7 +21,7 @@ class TensorTupleDataset(Dataset):
 #################################################################################################
 # ////////////////////////////////////////// Sampling //////////////////////////////////////////
 #################################################################################################
-class Sampling():
+class Sampler():
     def __init__(self, MTf):
         self.MTf = MTf
         # Get SDE from model for calculations
@@ -32,14 +32,19 @@ class Sampling():
     #############################################
 
     def _set_distributed(self, rank, world_size):
-        self.rank = rank
-        self.world_size = world_size
+        torch.cuda.set_device(rank)
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=rank,
+            timeout=datetime.timedelta(seconds=100_000_000)
+        )
 
-        # If using multiple GPUs, wrap model in DDP
-        if self.world_size > 1:
-            self.MTf.model = DDP(self.MTf.model, 
-                                device_ids=[self.rank],
-                                output_device=self.rank)
+        self.MTf.model.eval()
+        self.device = torch.device(f'cuda:{rank}')
+        self.MTf.model.to(self.device)
+        self.MTf.model = DDP(self.MTf.model, device_ids=[rank])
             
     def _gather_samples(self, all_samples, indices, result_dict):
         # Gather samples from all processes
@@ -190,20 +195,7 @@ class Sampling():
 
         # Set distributed parameters
         if world_size > 1:
-            dist.init_process_group(
-                backend='nccl',
-                init_method='env://',
-                world_size=world_size,
-                rank=rank,
-                timeout=datetime.timedelta(seconds=100_000_000)
-            )
-
-            # Move model to device and set to eval mode
-            self.MTf.model.eval()
-            self.device = torch.device(f'cuda:{rank}')
-            self.MTf.to(self.device)
-            self.model = DDP(self.MTf.model,
-                             device_ids=[rank])
+            self._set_distributed(rank, world_size)
         else:
             self.model = self.MTf.model
             self.model.eval()

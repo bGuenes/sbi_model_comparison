@@ -17,7 +17,8 @@ import time
 from src.ConditionTransformer import DiT
 from src.Simformer import Transformer
 from src.sde import VESDE, VPSDE
-from src.Sampling import Sampling
+from src.Sampler import Sampler
+from src.Trainer import Trainer
 from src.MultiObsSampling import MultiObsSampling
 
 # --------------------------------------------------------------------------------------------------
@@ -54,8 +55,10 @@ class ModelTransfuser(nn.Module):
         self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
                                        depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
         
+        # Define Trainer
+        self.trainer = Trainer(self)
         # Define Sampler
-        self.sampler = Sampling(self)
+        self.sampler = Sampler(self)
         self.multi_obs_sampler = MultiObsSampling(self)
 
         # self.model = Transformer(nodes_size=self.nodes_size, hidden_size=hidden_size,
@@ -77,160 +80,28 @@ class ModelTransfuser(nn.Module):
         x_t = x_0 + std * x_1 * (1-condition_mask)
         return x_t
     
-    def embedding_net_value(self, x):
-        # Value embedding net (here we just repeat the value)
-        #dim_value=self.dim_value
-        return x.repeat(1,1,self.dim_value)
-    
     def output_scale_function(self, t, x):
         scale = self.sde.marginal_prob_std(t).to(x.device)
         return x / scale
     
     
     # ------------------------------------
-    # /////////// Loss function ///////////
-
-    def loss_fn(self, score, timestep, x_1, condition_mask):
-        '''
-        Loss function for the score prediction task
-
-        Args:
-            score: Predicted score
-                    
-        The target is the noise added to the data at a specific timestep 
-        Meaning the prediction is the approximation of the noise added to the data
-        '''
-        sigma_t = self.sde.marginal_prob_std(timestep).unsqueeze(1).to(score.device)
-        x_1 = x_1.unsqueeze(2).to(score.device)
-        condition_mask = condition_mask.unsqueeze(2).to(score.device)
-        score = score.unsqueeze(2)
-
-        loss = torch.mean(sigma_t**2 * torch.sum((1-condition_mask)*(x_1+sigma_t*score)**2))
-
-        return loss
-    
-    # ------------------------------------
     # /////////// Training ///////////
     
     def train(self, data, condition_mask_data=None, 
-                batch_size=64, max_epochs=500, lr=1e-3, device="cpu", 
+                batch_size=128, max_epochs=500, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 
                 verbose=True, checkpoint_path=None, early_stopping_patience=20,
                 cfg_prob=0.2):
 
-        start_time = time.time()
+        if device == "cuda":
+            world_size = torch.cuda.device_count()
+        else :
+            world_size = 1
 
-        self.model.to(device)
-        eps = 1e-3
-
-        optimizer = schedulefree.AdamWScheduleFree(self.model.parameters(), lr=lr)
-
-        self.train_loss = []
-        self.val_loss = []
-        self.best_loss = torch.inf
-        
-        # --------------------------------------------------------------------------------------------------
-        # --- Training ---
-        for epoch in range(max_epochs):
-            self.model.train()
-            optimizer.train()
-            loss_epoch = 0
-
-            for batch in tqdm.tqdm(data, desc=f"Epoch {epoch+1}: ", disable=not verbose):
-                optimizer.zero_grad()
-
-                # Expecting batch as (x_0, condition_mask) tuple; modify if needed
-                if isinstance(batch, (list, tuple)):
-                    x_0, condition_mask_batch = batch
-                else:
-                    x_0 = batch
-                    # If no condition mask in your dataloader, create one based on cfg_prob using random sampling
-                    condition_mask_batch = torch.distributions.bernoulli.Bernoulli(0.33).sample(x_0.shape)
-
-                x_0 = x_0.to(device)
-                condition_mask_batch = condition_mask_batch.to(device)
-
-                # Classifier-free guidance
-                if cfg_prob is not None:
-                    rand = torch.rand(1).item()
-                    if rand < cfg_prob:
-                        condition_mask_batch = torch.zeros_like(condition_mask_batch)
-
-                timestep = torch.rand(x_0.shape[0], 1, device=device) * (1. - eps) + eps
-
-                # Sample x_1 from the random noise
-                x_1 = torch.randn_like(x_0)*(1-condition_mask_batch) + (condition_mask_batch)*x_0
-                # Calculate x at time t in the diffusion process
-                x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_batch)
-                # Calculate the score
-                out = self.model(x=x_t, t=timestep, c=condition_mask_batch)
-                score = self.output_scale_function(timestep, out)
-                # Calculate the loss
-                loss = self.loss_fn(score, timestep, x_1, condition_mask_batch)
-                loss_epoch += loss.item()
-
-                loss.backward()
-                optimizer.step()
-
-            self.train_loss.append(loss_epoch)
-
-            # -----------------------------------------------------------------------------------------------
-            # --- Validation ---
-            if val_data is not None:
-                self.model.eval()
-                optimizer.eval()
-
-                val_loss = 0
-                for batch in val_data:
-                    if isinstance(batch, (list, tuple)):
-                        x_0, condition_mask_val_batch = batch
-                    else:
-                        x_0 = batch
-                        condition_mask_val_batch = torch.distributions.bernoulli.Bernoulli(0.33).sample(x_0.shape)
-
-                    x_0 = x_0.to(device)
-                    condition_mask_val_batch = condition_mask_val_batch.to(device)
-
-                    timestep = torch.rand(x_0.shape[0],1, device=device)*(1.-eps) + eps
-
-                    x_1 = torch.randn_like(x_0)*(1-condition_mask_val_batch) + (condition_mask_val_batch)*x_0
-                    x_t = self.forward_diffusion_sample(x_0, timestep, x_1, condition_mask_val_batch)
-                    out = self.model(x=x_t, t=timestep, c=condition_mask_val_batch)
-                    score = self.output_scale_function(timestep, out)
-                    val_loss += self.loss_fn(score, timestep, x_1, condition_mask_val_batch).item()
-                
-                self.val_loss.append(val_loss)
-
-                if val_loss <= self.best_loss:
-                    self.best_loss = val_loss
-                    patience_counter = 0
-                    if checkpoint_path is not None:
-                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
-                else:
-                    patience_counter += 1
-                
-                if verbose:
-                    print(f'--- Training Loss: {loss_epoch:11.3f} --- Validation Loss: {val_loss:11.3f} ---')
-                    print()
-            else:
-                if val_loss <= self.best_loss:
-                    self.best_loss = val_loss
-                    patience_counter = 0
-                    if checkpoint_path is not None:
-                        self.save(f"{checkpoint_path}Model_checkpoint.pickle")
-                else:
-                    patience_counter += 1
-
-            if patience_counter >= early_stopping_patience:
-                if verbose:
-                    print(f"Early stopping triggered after {epoch+1} epochs")
-                break
-
-        end_time = time.time()
-        time_elapsed = (end_time - start_time) / 60
-
-        if verbose:
-            print(f"Training finished after {time_elapsed:.1f} minutes")
+        self.trainer.train(world_size=world_size, train_data=data, condition_mask_data=condition_mask_data, val_data=val_data, condition_mask_val=condition_mask_val,
+                            max_epochs=max_epochs, early_stopping_patience=early_stopping_patience, batch_size=batch_size, lr=lr, cfg_prob=cfg_prob,
+                            checkpoint_path=checkpoint_path, device=device, verbose=verbose)
 
     # ------------------------------------
     # /////////// Sample ///////////
@@ -270,6 +141,7 @@ class ModelTransfuser(nn.Module):
 
         if multi_obs_inference == False:
             if device == "cuda":
+                # Run sampling on all available GPUs
                 world_size = torch.cuda.device_count()
                 if world_size > 1:
                     os.environ['MASTER_ADDR'] = 'localhost'
@@ -285,19 +157,20 @@ class ModelTransfuser(nn.Module):
                             nprocs=world_size, join=True)
                     samples = result_dict.get('samples', None)
                     manager.shutdown()
-                    return samples
 
             else:
+                # Run sampling on specified device
                 samples = self.sampler.sample(rank=0, world_size=1, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
                                         order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                         verbose=verbose, method=method, save_trajectory=save_trajectory)
-                return samples
-        else:
+        
+        if multi_obs_inference == True:
+            # Hierarchical Compositional Score Modeling
             samples = self.multi_obs_sampler.sample(data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, multi_obs_inference=multi_obs_inference,
                                       order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                       verbose=verbose, method=method, save_trajectory=save_trajectory)
 
-            return samples
+        return samples
     
     # ------------------------------------
     # /////////// Save & Load ///////////

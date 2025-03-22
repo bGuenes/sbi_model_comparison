@@ -11,7 +11,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 
 # from src.ModelTransfuser_cfg import ModelTransfuser
-from src.ModelTransfuser_sampling import ModelTransfuser
+from src.ModelTransfuser import ModelTransfuser as MTf
 
 def load_data():
     # -------------------------------------
