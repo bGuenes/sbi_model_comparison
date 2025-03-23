@@ -98,7 +98,7 @@ def ddp_main(gpu, world_size, batch_size, sigma, depth, hidden_size, num_heads, 
     val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
 
     # Setup model and wrap with DDP
-    model = ModelTransfuser(14, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
+    model = MTf(14, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
     model.to(device)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
     

@@ -45,7 +45,7 @@ class Trainer():
     # ----- Training loop -----
     #############################################
     def train(self, world_size, train_data, condition_mask_data=None, val_data=None, condition_mask_val=None, 
-              max_epochs=500, early_stopping_patience=20, batch_size=128, lr=1e-3, cfg_prob=0.2, 
+              max_epochs=500, early_stopping_patience=20, batch_size=128, lr=1e-3,
               checkpoint_path=None, device="cpu", verbose=True):
         
         """
@@ -62,7 +62,6 @@ class Trainer():
             early_stopping_patience: Number of epochs to wait before early stopping
             batch_size: Batch size
             lr: Learning rate
-            cfg_prob: Probability of using the continuous-time flow
             checkpoint_path: Path to save the model
             device: Device to use
             verbose: Verbosity
@@ -79,7 +78,6 @@ class Trainer():
         self.early_stopping_patience = early_stopping_patience
         self.batch_size = batch_size
         self.lr = lr
-        self.cfg_prob = cfg_prob
         self.checkpoint_path = checkpoint_path
         self.verbose = verbose
         self.eps = 1e-3 # Epsilon for numerical stability and endpoint in diffusion process
@@ -222,6 +220,8 @@ class Trainer():
                 loss.backward()
                 if self.world_size > 1: dist.barrier()
                 optimizer.step()
+                
+        torch.cuda.empty_cache()
 
         return total_loss / batch_count
 
@@ -328,10 +328,9 @@ class Trainer():
 
     def _save_checkpoint(self):
         # Save checkpoint
-        if not os.path.exists(self.checkpoint_path):
-            os.makedirs(self.checkpoint_path)
-
         if self.world_size > 1:
-            torch.save(self.model.module.state_dict(), f"{self.checkpoint_path}/Model_checkpoint.pt")
+            # Copy DDP model to MTf model
+            self.MTf.model.load_state_dict(self.model.module.state_dict())
+            self.MTf.save(f"{self.checkpoint_path}/Model_checkpoint.pt")
         else:
-            torch.save(self.model.state_dict(), f"{self.checkpoint_path}/Model_checkpoint.pt")
+            self.MTf.save(f"{self.checkpoint_path}/Model_checkpoint.pt")
