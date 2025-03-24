@@ -5,12 +5,7 @@ from scipy.stats import norm
 import argparse
 
 import torch
-import torch.multiprocessing as mp
-import torch.distributed as dist
-from torch.utils.data.distributed import DistributedSampler
-from torch.utils.data import DataLoader
 
-# from src.ModelTransfuser_cfg import ModelTransfuser
 from src.ModelTransfuser import ModelTransfuser as MTf
 
 def load_data():
@@ -79,48 +74,6 @@ def load_data():
 
     return train_data, val_data
 
-def ddp_main(gpu, world_size, batch_size, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path):
-    rank = gpu
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        world_size=world_size,
-        rank=rank
-    )
-    
-    device = torch.device(f'cuda:{gpu}')
-
-    # Load dataset and setup DistributedSampler
-    train_dataset, val_dataset = load_data()
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
-
-    # Setup model and wrap with DDP
-    model = MTf(14, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
-    model.to(device)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
-    
-    # Train model
-    model.module.train(train_loader, val_data=val_loader, batch_size=batch_size, device=device, cfg_prob=cfg_prob,
-              checkpoint_path=path, verbose=(rank==0))
-
-    dist.barrier()
-    
-    if rank == 0:
-        model.module.save(path+"Model.pickle")
-        # Plot loss (assumes loss lists collected in model.module.train_loss)
-        epoch = np.arange(0, len(model.module.train_loss))
-        plt.plot(epoch, np.array(model.module.train_loss)/len(train_dataset), label='Train Loss')
-        plt.plot(epoch, np.array(model.module.val_loss)/len(val_dataset), label='Val Loss')
-        plt.legend()
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.savefig(path+'Loss.png')
-    
-    dist.destroy_process_group()
-
 if __name__ == "__main__":
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
@@ -152,4 +105,12 @@ if __name__ == "__main__":
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
     world_size = len(args.gpus.split(','))
 
-    mp.spawn(ddp_main, args=(world_size, batch_size, sigma, depth, hidden_size, num_heads, mlp_ratio, cfg_prob, path), nprocs=world_size)
+    # Load data
+    train_data, val_data = load_data()
+
+    # Setup model
+    nodes_size = train_data.shape[1]
+    model = MTf(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
+
+    # Train model
+    model.train(train_data, val_data=val_data, batch_size=batch_size, max_epochs=500, device="cuda", verbose=True, early_stopping_patience=20, path=path)

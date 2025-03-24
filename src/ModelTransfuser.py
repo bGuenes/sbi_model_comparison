@@ -1,15 +1,11 @@
 import torch
 import torch.nn as nn
 
-import numpy as np
-
-import pickle
-
 from src.ConditionTransformer import DiT
 from src.sde import VESDE, VPSDE
 from src.Sampler import Sampler
 from src.Trainer import Trainer
-from src.MultiObsSampling import MultiObsSampling
+from src.MultiObsSampler import MultiObsSampler
 
 # --------------------------------------------------------------------------------------------------
 
@@ -31,6 +27,12 @@ class ModelTransfuser(nn.Module):
         super(ModelTransfuser, self).__init__()
 
         self.nodes_size = nodes_size
+        self.sde_type = sde_type
+        self.sigma = sigma
+        self.hidden_size = hidden_size
+        self.depth = depth
+        self.num_heads = num_heads
+        self.mlp_ratio = mlp_ratio
 
         # initialize SDE
         self.sigma = sigma
@@ -49,7 +51,7 @@ class ModelTransfuser(nn.Module):
         self.trainer = Trainer(self)
         # Define Sampler
         self.sampler = Sampler(self)
-        self.multi_obs_sampler = MultiObsSampling(self)
+        self.multi_obs_sampler = MultiObsSampler(self)
         
     # ------------------------------------
     # /////////// Helper functions ///////////
@@ -71,14 +73,13 @@ class ModelTransfuser(nn.Module):
         scale = self.sde.marginal_prob_std(t).to(x.device)
         return x / scale
     
-    
     # ------------------------------------
     # /////////// Training ///////////
     
     def train(self, data, condition_mask_data=None, 
                 batch_size=128, max_epochs=500, lr=1e-3, device="cpu", 
                 val_data=None, condition_mask_val=None, 
-                verbose=True, checkpoint_path=None, early_stopping_patience=20):
+                verbose=True, path=None, early_stopping_patience=20):
         """
         Train the model on the provided data
 
@@ -97,7 +98,7 @@ class ModelTransfuser(nn.Module):
                     Shape: (num_samples, num_total_features)
                     Optional
             verbose: Whether to show training progress
-            checkpoint_path: Path to save model checkpoints
+            path: Path to save model
             early_stopping_patience: Number of epochs to wait before early stopping
         """
 
@@ -108,12 +109,12 @@ class ModelTransfuser(nn.Module):
 
         self.trainer.train(world_size=world_size, train_data=data, condition_mask_data=condition_mask_data, val_data=val_data, condition_mask_val=condition_mask_val,
                             max_epochs=max_epochs, early_stopping_patience=early_stopping_patience, batch_size=batch_size, lr=lr,
-                            checkpoint_path=checkpoint_path, device=device, verbose=verbose)
+                            path=path, device=device, verbose=verbose)
 
     # ------------------------------------
     # /////////// Sample ///////////
         
-    def sample(self, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False,
+    def sample(self, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False):
         """
@@ -157,7 +158,7 @@ class ModelTransfuser(nn.Module):
             
         elif multi_obs_inference == True:
             # Hierarchical Compositional Score Modeling
-            samples = self.multi_obs_sampler.sample(data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, multi_obs_inference=multi_obs_inference,
+            samples = self.multi_obs_sampler.sample(world_size=world_size, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, hierarchy=hierarchy,
                                       order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                       verbose=verbose, method=method, save_trajectory=save_trajectory)
 
@@ -165,13 +166,38 @@ class ModelTransfuser(nn.Module):
     
     # ------------------------------------
     # /////////// Save & Load ///////////
-
-    def save(self, path):
-        with open(path, 'wb') as f:
-            pickle.dump(self, f)
-
+    
+    def save(self, path, name="Model"):
+        state_dict = {
+                'model_state_dict' : self.model.state_dict(),
+                'nodes_size': self.nodes_size,
+                'sde_type': self.sde_type,
+                'sigma': self.sigma,
+                'hidden_size': self.hidden_size,
+                'depth': self.depth,
+                'num_heads': self.num_heads,
+                'mlp_ratio': self.mlp_ratio
+            }
+        
+        torch.save(state_dict, f"{path}/{name}.pt")
+        
     @staticmethod
     def load(path):
-        with open(path, 'rb') as f:
-            model = pickle.load(f)
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(path, map_location=device)
+
+        model = ModelTransfuser(
+            nodes_size=checkpoint['nodes_size'],
+            sde_type=checkpoint['sde_type'],
+            sigma=checkpoint['sigma'],
+            hidden_size=checkpoint['hidden_size'],
+            depth=checkpoint['depth'],
+            num_heads=checkpoint['num_heads'],
+            mlp_ratio=checkpoint['mlp_ratio']
+        )
+
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+
         return model
+    

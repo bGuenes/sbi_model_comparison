@@ -23,7 +23,7 @@ class TensorTupleDataset(Dataset):
 #################################################################################################
 # ////////////////////////////////////////// Sampling //////////////////////////////////////////
 #################################################################################################
-class Sampler():
+class MultiObsSampler():
     def __init__(self, MTf):
         self.MTf = MTf
         # Get SDE from model for calculations
@@ -33,7 +33,7 @@ class Sampler():
     # ----- Main Sampling Loop -----
     #############################################
     
-    def sample(self, world_size, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None,
+    def sample(self, world_size, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False, result_dict=None):
         """
@@ -51,6 +51,8 @@ class Sampler():
             eps: End time for diffusion process
             num_samples: Number of samples to generate
             cfg_alpha: Classifier-free guidance strength
+            hierarchy: Hierarchy of variables for multi-observation sampling
+                    - List of indices for which variables compositional score modeling should be applied to
 
             - DPM-Solver parameters -
             order: Order of DPM-Solver (1, 2 or 3)
@@ -65,6 +67,7 @@ class Sampler():
             method: Sampling method to use (euler, dpm)
             save_trajectory: Whether to save the intermediate denoising trajectory
         """
+
         
         # Set parameters
         self.world_size = world_size
@@ -75,6 +78,7 @@ class Sampler():
         self.verbose = verbose
         self.method = method
         self.save_trajectory = save_trajectory
+        self.hierarchy = hierarchy
 
         if method == "dpm":
             self.corrector_steps_interval = corrector_steps_interval
@@ -96,6 +100,7 @@ class Sampler():
             samples = self._sample_loop(rank, data, condition_mask, num_samples)
 
         return samples
+
    
     def _sample_loop(self, rank, data, condition_mask, num_samples, result_dict=None):
         # Set rank
@@ -107,6 +112,10 @@ class Sampler():
             self._ddp_setup(rank, self.world_size)
         else:
             self.model = self.MTf.model.to(self.device)
+
+        # Set hierarchy for compositional score modeling to all latent if not provided
+        if self.hierarchy is None:
+            self.hierarchy = torch.where(condition_mask[0] == 0)[0].tolist()
         
         # Check data structure
         data_loader, self.num_observations = self._check_data_structure(data, condition_mask)
@@ -195,7 +204,10 @@ class Sampler():
             samples = gathered_samples[sort_idx]
 
             result_dict['samples'] = samples.cpu()
-        
+
+    def _gather_scores(self, all_scores, indices):
+        pass
+
     #############################################
     # ----- Standard Functions -----
     #############################################
@@ -204,18 +216,28 @@ class Sampler():
         """Get score estimate with optional classifier-free guidance"""
         # Get conditional score
         with torch.no_grad():
-            score_cond = self.model(x=x, t=t, c=condition_mask)
-            score_cond = self.MTf.output_scale_function(t, score_cond)
-            
-            # Apply classifier-free guidance if requested
-            if cfg_alpha is not None:
-                score_uncond = self.model(x=x, t=t, c=torch.zeros_like(condition_mask))
-                score_uncond = self.MTf.output_scale_function(t, score_uncond)
-                score = score_uncond + cfg_alpha * (score_cond - score_uncond)
-            else:
-                score = score_cond
+            score_table = torch.zeros_like(x)
+            for i in range(x.shape[0]):
+                score_table[i,:,:] = self.MTf.model(x=x[i], t=t, c=condition_mask[i])
+                score_table[i,:,:] = self.MTf.output_scale_function(t, score_table[i,:,:])
+
+                # Apply classifier-free guidance if requested
+                if cfg_alpha is not None:
+                    score_uncond = self.MTf.model(x=x[i], t=t, c=torch.zeros_like(condition_mask[i]))
+                    score_uncond = self.MTf.output_scale_function(t, score_uncond)
+                    score_table[i,:,:] = score_uncond + cfg_alpha * (score_table[i,:,:] - score_uncond)
+
+            score = self._compositional_score(score_table, t, self.hierarchy)
                 
         return score
+    
+    def _compositional_score(self, scores, t, hierarchy):
+        prefactor = (1 - len(scores))*(1 - t) * self.prior_score[0]
+        compositional_scores = prefactor + torch.sum(scores, dim=0)
+        compositional_scores = compositional_scores.repeat(len(scores), 1, 1)
+        scores[:,:,hierarchy] = compositional_scores[:,:,hierarchy]
+
+        return scores
 
     def _check_data_shape(self, data, condition_mask):
         # Check data shape
@@ -279,6 +301,10 @@ class Sampler():
 
         random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
 
+        # In case for compositional score modeling the random samples need to be the same across all samples
+        self.prior_score = torch.randn(data.shape[1], data.shape[2], device=self.device).unsqueeze(0).repeat(data.shape[0],1,1) * (1-condition_mask)
+        random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * self.prior_score
+
         data += random_noise_samples
         return data
   
@@ -306,25 +332,24 @@ class Sampler():
             self.data_t[:,0,:,:] = data
             
         # Main sampling loop
-        for n in tqdm.tqdm(range(len(data)), disable=not self.verbose):
-            for i, t in enumerate(self.timesteps_list):
+        for i, t in tqdm.tqdm(enumerate(self.timesteps_list)):
 
-                t = t.reshape(-1, 1)
-                
-                # Get score estimate
-                score = self._get_score(data[n,:], t, condition_mask[n,:], self.cfg_alpha)
-                
-                # Update step
-                dx = self.sde.sigma**(2*t) * score * self.dt
-                
-                # Apply update respecting condition mask
-                data[n,:] = data[n,:] + dx * (1-condition_mask[n,:])
-                
-                if self.save_trajectory:
-                    # Store trajectory data
-                    self.data_t[n,i+1] = data[n,:]
-                    self.dx_t[n,i] = dx
-                    self.score_t[n,i] = score
+            t = t.reshape(-1, 1)
+            
+            # Get score estimate
+            score = self._get_score(data, t, condition_mask, self.cfg_alpha)
+            
+            # Update step
+            dx = self.sde.sigma**(2*t) * score * self.dt
+            
+            # Apply update respecting condition mask
+            data = data + dx * (1-condition_mask)
+            
+            if self.save_trajectory:
+                # Store trajectory data
+                self.data_t[:,i+1] = data
+                self.dx_t[:,i] = dx
+                self.score_t[:,i] = score
 
         return data.detach()
     
@@ -432,35 +457,34 @@ class Sampler():
             self.data_t[:,0,:,:] = data
 
         # Main sampling loop
-        for n in tqdm.tqdm(range(len(data)), disable=not self.verbose):
-            for i in range(self.timesteps-1):
-                
-                # ------- PREDICTOR: DPM-Solver -------
-                t_now = self.timesteps_list[i].reshape(-1, 1)
-                t_next = self.timesteps_list[i+1].reshape(-1, 1)
+        for i in tqdm.tqdm(range(self.timesteps-1), disable=not self.verbose):
+            
+            # ------- PREDICTOR: DPM-Solver -------
+            t_now = self.timesteps_list[i].reshape(-1, 1)
+            t_next = self.timesteps_list[i+1].reshape(-1, 1)
 
-                if order == 1:
-                    data[n,:] = self._dpm_solver_1_step(data[n,:], t_now, t_next, condition_mask[n,:])
-                elif order == 2:
-                    data[n,:] = self._dpm_solver_2_step(data[n,:], t_now, t_next, condition_mask[n,:])
-                elif order == 3:
-                    data[n,:] = self._dpm_solver_3_step(data[n,:], t_now, t_next, condition_mask[n,:])
-                else:
-                    raise ValueError(f"Only orders 1, 2 or 3 are supported in the DPM-Solver.")
-                
-                # ------- CORRECTOR: Langevin MCMC steps -------
-                # Only apply corrector steps occasionally to save computation
-                if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - final_corrector_steps):
-                    steps = corrector_steps
-                    if i >= self.timesteps - final_corrector_steps:
-                        steps = corrector_steps * 2  # More steps at the end
-                        
-                    data[n,:] = self._corrector_step(data[n,:], t_next, condition_mask[n,:], 
-                                               steps, snr, self.cfg_alpha)
+            if order == 1:
+                data = self._dpm_solver_1_step(data, t_now, t_next, condition_mask)
+            elif order == 2:
+                data = self._dpm_solver_2_step(data, t_now, t_next, condition_mask)
+            elif order == 3:
+                data = self._dpm_solver_3_step(data, t_now, t_next, condition_mask)
+            else:
+                raise ValueError(f"Only orders 1, 2 or 3 are supported in the DPM-Solver.")
+            
+            # ------- CORRECTOR: Langevin MCMC steps -------
+            # Only apply corrector steps occasionally to save computation
+            if corrector_steps > 0 and (i % corrector_steps_interval == 0 or i >= self.timesteps - final_corrector_steps):
+                steps = corrector_steps
+                if i >= self.timesteps - final_corrector_steps:
+                    steps = corrector_steps * 5  # More steps at the end
+                    
+                data = self._corrector_step(data, t_next, condition_mask, 
+                                            steps, snr, self.cfg_alpha)
 
-                if self.save_trajectory:
-                    # Store trajectory data
-                    self.data_t[n,i+1] = data[n,:]
+            if self.save_trajectory:
+                # Store trajectory data
+                self.data_t[:,i+1] = data
 
         return data.detach()
     

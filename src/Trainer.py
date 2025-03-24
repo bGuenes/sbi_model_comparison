@@ -37,7 +37,7 @@ class TensorTupleDataset(Dataset):
 class Trainer():
     def __init__(self, MTf):
         self.MTf = MTf
-        self.model_copy = copy.deepcopy(self.MTf.model)
+        #self.model_copy = copy.deepcopy(self.MTf.model)
         # Get SDE from model for calculations
         self.sde = self.MTf.sde
 
@@ -46,7 +46,7 @@ class Trainer():
     #############################################
     def train(self, world_size, train_data, condition_mask_data=None, val_data=None, condition_mask_val=None, 
               max_epochs=500, early_stopping_patience=20, batch_size=128, lr=1e-3,
-              checkpoint_path=None, device="cpu", verbose=True):
+              path=None, device="cpu", verbose=True):
         
         """
         Training function for the score prediction task
@@ -62,23 +62,25 @@ class Trainer():
             early_stopping_patience: Number of epochs to wait before early stopping
             batch_size: Batch size
             lr: Learning rate
-            checkpoint_path: Path to save the model
+            path: Path to save the model
             device: Device to use
             verbose: Verbosity
         """
         start_time = time.time()
 
         # Create Checkpoint directory
-        if checkpoint_path is not None and not os.path.exists(checkpoint_path):
-            os.makedirs(checkpoint_path)
-
+        if path is None:
+            path = "data/models/Model_test/"
+        if not os.path.exists(path):
+            os.makedirs(path)
+        
         # Set Parameters
         self.world_size = world_size
         self.max_epochs = max_epochs
         self.early_stopping_patience = early_stopping_patience
         self.batch_size = batch_size
         self.lr = lr
-        self.checkpoint_path = checkpoint_path
+        self.path = path
         self.verbose = verbose
         self.eps = 1e-3 # Epsilon for numerical stability and endpoint in diffusion process
 
@@ -141,7 +143,7 @@ class Trainer():
             if val_data is None and train_loss_all < best_val_loss:
                 best_val_loss = train_loss_all
                 patience_counter = 0
-                if self.checkpoint_path is not None:
+                if rank == 0:
                     self._save_checkpoint()
             elif val_data is None and train_loss_all >= best_val_loss:
                 patience_counter += 1
@@ -168,7 +170,7 @@ class Trainer():
                 if val_loss_all < best_val_loss:
                     best_val_loss = val_loss_all
                     patience_counter = 0
-                    if self.checkpoint_path is not None:
+                    if rank == 0:
                         self._save_checkpoint()
                 elif val_loss_all >= best_val_loss:
                     patience_counter += 1
@@ -191,7 +193,7 @@ class Trainer():
         if self.world_size > 1:
             dist.barrier()
             if rank == 0:
-                self.MTf.model.load_state_dict(self.model.module.state_dict())
+                self._save_checkpoint(name="Model")
             dist.destroy_process_group()
         
     def _run_epoch(self, epoch, data_loader, optimizer, is_train):
@@ -208,7 +210,8 @@ class Trainer():
         total_loss = 0
         batch_count = 0
 
-        for batch in tqdm.tqdm(data_loader, disable=not self.verbose):
+        show_progress = self.verbose if is_train else False
+        for batch in tqdm.tqdm(data_loader, disable=not show_progress):
             if is_train:
                 optimizer.zero_grad()
             
@@ -283,8 +286,8 @@ class Trainer():
         )
 
         self.device = torch.device(f'cuda:{rank}')
-        self.model_copy.to(self.device)
-        self.model = DDP(self.model_copy, device_ids=[rank], output_device=rank)
+        self.MTf.model.to(self.device)
+        self.model = DDP(self.MTf.model, device_ids=[rank], output_device=rank)
 
     #############################################
     # ----- Standard Functions -----
@@ -326,11 +329,20 @@ class Trainer():
 
         return data_loader
 
-    def _save_checkpoint(self):
+    def _save_checkpoint(self, name="Model_checkpoint"):
         # Save checkpoint
         if self.world_size > 1:
-            # Copy DDP model to MTf model
-            self.MTf.model.load_state_dict(self.model.module.state_dict())
-            self.MTf.save(f"{self.checkpoint_path}/Model_checkpoint.pt")
+            # Save torch model in case of multi-GPU training
+            state_dict = {
+                'model_state_dict' : self.model.module.state_dict(),
+                'nodes_size': self.MTf.nodes_size,
+                'sde_type': self.MTf.sde_type,
+                'sigma': self.MTf.sigma,
+                'hidden_size': self.MTf.hidden_size,
+                'depth': self.MTf.depth,
+                'num_heads': self.MTf.num_heads,
+                'mlp_ratio': self.MTf.mlp_ratio
+            }
+            torch.save(state_dict, f"{self.path}/{name}.pt")
         else:
-            self.MTf.save(f"{self.checkpoint_path}/Model_checkpoint.pt")
+            self.MTf.save(f"{self.path}/{name}.pt")
