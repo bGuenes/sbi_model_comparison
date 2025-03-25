@@ -101,7 +101,6 @@ class MultiObsSampler():
 
         return samples
 
-   
     def _sample_loop(self, rank, data, condition_mask, num_samples, result_dict=None):
         # Set rank
         self.rank = rank
@@ -136,9 +135,9 @@ class MultiObsSampler():
             
             # Get samples for this batch
             if self.method == "euler":
-                samples = self._basic_sampler(data_batch, condition_mask_batch)
+                samples = self._basic_sampler(data_batch, condition_mask_batch, idx)
             elif self.method == "dpm":
-                samples = self._dpm_sampler(data_batch, condition_mask_batch,
+                samples = self._dpm_sampler(data_batch, condition_mask_batch, idx,
                                             order=self.order, snr=self.snr, corrector_steps_interval=self.corrector_steps_interval,
                                             corrector_steps=self.corrector_steps, final_corrector_steps=self.final_corrector_steps)
             elif self.method == "multi_observation":
@@ -205,14 +204,29 @@ class MultiObsSampler():
 
             result_dict['samples'] = samples.cpu()
 
-    def _gather_scores(self, all_scores, indices):
-        pass
+    def _gather_scores(self, score_table, indices):
+        # Gather scores from all processes
+        gathered_scores = [torch.zeros_like(score_table) for _ in range(self.world_size)]
+        
+        indices = indices.to(self.device)
+        gathered_idx = [torch.zeros_like(indices) for _ in range(self.world_size)]
+
+        dist.all_gather(gathered_scores, score_table)
+        dist.all_gather(gathered_idx, indices)
+
+        # Sort results by index
+        gathered_idx = torch.cat(gathered_idx, dim=0)
+        gathered_scores = torch.cat(gathered_scores, dim=0)
+        _, sort_idx = gathered_idx.sort()
+        gathered_scores = gathered_scores[sort_idx]
+
+        return gathered_scores
 
     #############################################
     # ----- Standard Functions -----
     #############################################
 
-    def _get_score(self, x, t, condition_mask, cfg_alpha=None):
+    def _get_score(self, x, t, condition_mask, indices, cfg_alpha=None):
         """Get score estimate with optional classifier-free guidance"""
         # Get conditional score
         with torch.no_grad():
@@ -227,9 +241,13 @@ class MultiObsSampler():
                     score_uncond = self.MTf.output_scale_function(t, score_uncond)
                     score_table[i,:,:] = score_uncond + cfg_alpha * (score_table[i,:,:] - score_uncond)
 
+            if self.world_size > 1:
+                dist.barrier()
+                score_table = self._gather_scores(score_table, indices)
+
             score = self._compositional_score(score_table, t, self.hierarchy)
                 
-        return score
+        return score[indices]
     
     def _compositional_score(self, scores, t, hierarchy):
         prefactor = (1 - len(scores))*(1 - t) * self.prior_score[0]
@@ -302,7 +320,16 @@ class MultiObsSampler():
         random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * torch.randn_like(data) * (1-condition_mask)
 
         # In case for compositional score modeling the random samples need to be the same across all samples
-        self.prior_score = torch.randn(data.shape[1], data.shape[2], device=self.device).unsqueeze(0).repeat(data.shape[0],1,1) * (1-condition_mask)
+        if self.rank == 0:
+            self.prior_score = torch.randn(data.shape[1], data.shape[2], device=self.device).unsqueeze(0).repeat(data.shape[0],1,1) * (1-condition_mask)
+        else:
+            # If not rank 0 get self.prior_score from rank 0
+            self.prior_score = torch.zeros(data.shape[0], data.shape[1], data.shape[2], device=self.device)
+
+        if self.world_size > 1:
+            dist.barrier()
+            dist.broadcast(self.prior_score, src=0)
+
         random_noise_samples = self.sde.marginal_prob_std(torch.ones_like(data)) * self.prior_score
 
         data += random_noise_samples
@@ -313,7 +340,7 @@ class MultiObsSampler():
     #############################################
     
     # Euler-Maruyama sampling
-    def _basic_sampler(self, data, condition_mask):
+    def _basic_sampler(self, data, condition_mask, idx):
         """
         Basic Euler-Maruyama sampling method
         
@@ -332,12 +359,12 @@ class MultiObsSampler():
             self.data_t[:,0,:,:] = data
             
         # Main sampling loop
-        for i, t in tqdm.tqdm(enumerate(self.timesteps_list)):
+        for i, t in tqdm.tqdm(enumerate(self.timesteps_list), disable=not self.verbose, total=self.timesteps):
 
             t = t.reshape(-1, 1)
             
             # Get score estimate
-            score = self._get_score(data, t, condition_mask, self.cfg_alpha)
+            score = self._get_score(data, t, condition_mask, idx, self.cfg_alpha)
             
             # Update step
             dx = self.sde.sigma**(2*t) * score * self.dt
@@ -358,8 +385,7 @@ class MultiObsSampler():
     #############################################
     
     # DPM sampling with Langevin corrector steps
-
-    def _corrector_step(self, x, t, condition_mask, steps, snr, cfg_alpha=None):
+    def _corrector_step(self, x, t, condition_mask, idx, steps, snr, cfg_alpha=None):
         """
         Corrector steps using Langevin dynamics
         
@@ -369,7 +395,7 @@ class MultiObsSampler():
             """
         for _ in range(steps):
             # Get score estimate
-            score = self._get_score(x, t, condition_mask, cfg_alpha)
+            score = self._get_score(x, t, condition_mask, idx, cfg_alpha)
             
             # Langevin dynamics update
             noise_scale = torch.sqrt(snr * 2 * self.sde.marginal_prob_std(t)**2)
@@ -381,32 +407,32 @@ class MultiObsSampler():
 
         return x
 
-    def _dpm_solver_1_step(self, data_t, t, t_next, condition_mask):
+    def _dpm_solver_1_step(self, data_t, t, t_next, condition_mask, idx):
         """First-order solver"""
         sigma_now = self.sde.sigma_t(t)
 
         # First-order step
-        score_now = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
+        score_now = self._get_score(data_t, t, condition_mask, idx, self.cfg_alpha)
         data_next = data_t + (t-t_next) * sigma_now * score_now * (1-condition_mask)
 
         return data_next
     
-    def _dpm_solver_2_step(self, data_t, t, t_next, condition_mask):
+    def _dpm_solver_2_step(self, data_t, t, t_next, condition_mask, idx):
         """Second-order solver"""
         sigma_now = self.sde.sigma_t(t)
         sigma_next = self.sde.sigma_t(t_next)
 
         # First-order step
-        score_half = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
+        score_half = self._get_score(data_t, t, condition_mask, idx, self.cfg_alpha)
         data_half = data_t + (t-t_next) * sigma_now * score_half * (1-condition_mask)
 
         # Second-order step
-        score_next = self._get_score(data_half, t_next, condition_mask, self.cfg_alpha)
+        score_next = self._get_score(data_half, t_next, condition_mask, idx, self.cfg_alpha)
         data_next = data_t + 0.5 * (t-t_next) * (sigma_now**2 * score_half + sigma_next**2 * score_next) * (1-condition_mask)
 
         return data_next
     
-    def _dpm_solver_3_step(self, data_t, t, t_next, condition_mask):
+    def _dpm_solver_3_step(self, data_t, t, t_next, condition_mask, idx):
         """Third-order solver"""
         # Get sigma values at different time points
         sigma_t = self.sde.sigma_t(t)
@@ -415,19 +441,19 @@ class MultiObsSampler():
         sigma_next = self.sde.sigma_t(t_next)
 
         # First calculate the intermediate score at time t
-        score_t = self._get_score(data_t, t, condition_mask, self.cfg_alpha)
+        score_t = self._get_score(data_t, t, condition_mask, idx, self.cfg_alpha)
         
         # First intermediate point (Euler step)
         data_mid1 = data_t + (t - t_mid) * sigma_t * score_t * (1-condition_mask)
         
         # Get score at the first intermediate point
-        score_mid1 = self._get_score(data_mid1, t_mid, condition_mask, self.cfg_alpha)
+        score_mid1 = self._get_score(data_mid1, t_mid, condition_mask, idx, self.cfg_alpha)
         
         # Second intermediate point (using first intermediate)
         data_mid2 = data_t + (t - t_mid) * ((1/3) * sigma_t * score_t + (2/3) * sigma_mid * score_mid1) * (1-condition_mask)
         
         # Get score at the second intermediate point
-        score_mid2 = self._get_score(data_mid2, t_mid, condition_mask, self.cfg_alpha)
+        score_mid2 = self._get_score(data_mid2, t_mid, condition_mask, idx, self.cfg_alpha)
         
         # Final step using all information
         data_next = data_t + (t - t_next) * ((1/4) * sigma_t * score_t + 
@@ -435,7 +461,7 @@ class MultiObsSampler():
         
         return data_next
 
-    def _dpm_sampler(self, data, condition_mask, 
+    def _dpm_sampler(self, data, condition_mask, idx,
                      order=2, 
                      snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3):
         """
@@ -457,18 +483,18 @@ class MultiObsSampler():
             self.data_t[:,0,:,:] = data
 
         # Main sampling loop
-        for i in tqdm.tqdm(range(self.timesteps-1), disable=not self.verbose):
+        for i in tqdm.tqdm(range(self.timesteps-1), disable=not self.verbose, total=self.timesteps-1):
             
             # ------- PREDICTOR: DPM-Solver -------
             t_now = self.timesteps_list[i].reshape(-1, 1)
             t_next = self.timesteps_list[i+1].reshape(-1, 1)
 
             if order == 1:
-                data = self._dpm_solver_1_step(data, t_now, t_next, condition_mask)
+                data = self._dpm_solver_1_step(data, t_now, t_next, condition_mask, idx)
             elif order == 2:
-                data = self._dpm_solver_2_step(data, t_now, t_next, condition_mask)
+                data = self._dpm_solver_2_step(data, t_now, t_next, condition_mask, idx)
             elif order == 3:
-                data = self._dpm_solver_3_step(data, t_now, t_next, condition_mask)
+                data = self._dpm_solver_3_step(data, t_now, t_next, condition_mask, idx)
             else:
                 raise ValueError(f"Only orders 1, 2 or 3 are supported in the DPM-Solver.")
             
@@ -479,7 +505,7 @@ class MultiObsSampler():
                 if i >= self.timesteps - final_corrector_steps:
                     steps = corrector_steps * 5  # More steps at the end
                     
-                data = self._corrector_step(data, t_next, condition_mask, 
+                data = self._corrector_step(data, t_next, condition_mask, idx,
                                             steps, snr, self.cfg_alpha)
 
             if self.save_trajectory:
