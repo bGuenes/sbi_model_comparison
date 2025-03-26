@@ -13,21 +13,19 @@ def load_data():
     # Load data
 
     # --- Load in training data ---
-    path_training = os.getcwd() + '/data/Chempy_data/chempy_TNG_train_data.npz'
+    path_training = os.getcwd() + '/data/Chempy_model_comp_data/chempy_842.npz'
     training_data = np.load(path_training, mmap_mode='r')
 
     elements = training_data['elements']
     train_x = training_data['params']
     train_y = training_data['abundances']
 
-
     # ---  Load in the validation data ---
-    path_test = os.getcwd() + '/data/Chempy_data/chempy_TNG_val_data.npz'
+    path_test = os.getcwd() + '/data/Chempy_model_comp_data/chempy_842_val.npz'
     val_data = np.load(path_test, mmap_mode='r')
 
     val_x = val_data['params']
     val_y = val_data['abundances']
-
 
     # --- Clean the data ---
     # Chempy sometimes returns zeros or infinite values, which need to removed
@@ -46,7 +44,6 @@ def load_data():
         y = np.delete(y, 2, 1)
 
         return x, y
-
 
     train_x, train_y = clean_data(train_x, train_y)
     val_x, val_y     = clean_data(val_x, val_y)
