@@ -20,7 +20,7 @@ flowchart LR
     D --> F([MAP])
 
     F --> |evaluate likelihood| C
-    C --> |gaussian KDE| H([Likelihood $p(x|\hat \theta)$])
+    C --> |gaussian KDE| H([Likelihood of Observation under given Model])
     E --> |evaluate likelihood| H
     
 ```
@@ -232,54 +232,67 @@ The log-likelihood of the data given the MAP-parameters of model $\mathcal{M}_i$
 #### Model Comparison
 To compare the models with the maximized log-likelihood $\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)$ we can use the [Akaike Information Criterion (AIC)](https://en.wikipedia.org/wiki/Akaike_information_criterion#) which is an estimation of the predictive error of the model, derived from the Kullback-Leibler divergence to the true model. Since the true model is unknown, the AIC can only give a relative information loss between the provided models. This however is sufficient to compare the models in our case. <br>
 The AIC is defined as:
+
 $$
     \text{AIC}_i = -2\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i) + 2k
 $$
+
 where $k$ is the number of parameters in the model. <br>
 The model with the lowest AIC is considered the best fit to the data. <br>
 In case of a relativly small sample size $n$ ($\frac{n}{k}<40$), which in our case is true, since we use a NN with a high number of parameters $k$, the corrected AIC ([AICc](https://link.springer.com/book/10.1007/b97636)) should be used:
+
 $$
 \begin{align*}
     \text{AICc}_i &= \text{AIC}_i + \frac{2k(k+1)}{n-k-1} \\
     &= -2\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i) + 2k + \frac{2k(k+1)}{n-k-1}
 \end{align*} 
 $$
+
 where $n$ is the sample size and $k$ the parameter count of the model. <br>
 The AICc is a small-sample correction to the AIC that approximates the AIC in the limit of large sample sizes and is therefore more suitble in general. <br>
 However in our case we are not interested in the absolute AIC values, but rather the relative AIC values in comparison between the models, where all models have the same sample size $n$ and parameter count $k$. 
 Therefore it is sufficient to use the AIC without all $k$ and $n$ terms in the AIC, since they are the same for all models and would factor out in the comparison. <br>
 The AIC can be simplified to:
+
 $$
     \text{AIC}_i = -2\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)
 $$
 
 In general AIC is used to compare two competing models $\mathcal{M}_1$ and $\mathcal{M}_2$ with the following equation:
+
 $$
-    z = \exp\Big(\frac{1}{2}(\text{AIC}_1-\text{AIC}_2)\Big),
+    z = \exp \Big( \frac{1} {2} ( \text{AIC}_ 1 - \text{AIC}_ 2) \Big),
 $$
+
 where $z$ is a measure of how much more probable the model $\mathcal{M}_2$ is compared to $\mathcal{M}_1$. <br>
 We are comparing however more than two models, so to get a measure of how probable each model is to describe the observation, 
 we can utalize that $\Delta_i(\text{AIC})$ is proportional to the likelihood of the model $\mathcal{M}_i$ given the data $\mathbf{x}$:
+
 $$
 \begin{align*}
-    \Delta_i(\text{AIC}) &= \text{AIC}_i - \text{AIC}_{min} \\
+    \Delta_i(\text{AIC}) &= \text{AIC}_ i - \text{AIC}_{min} \\
     \mathcal{L}(\mathcal{M}_i|\mathbf{x}) &\propto \exp\Big(-\frac{1}{2}\Delta_i(\text{AIC})\Big)
 \end{align*}
 $$
+
 where $\Delta_i(\text{AIC})$ is the difference between the AIC of model $\mathcal{M}_i$ and the minimum AIC of all models. <br>
 These model likelihoods can be normalised to get the posterior model probabilities [(Akaike weights)](https://doi.org/10.3758/BF03206482):
+
 $$
-    \mathcal{P}(\mathcal{M}_i|\mathbf{x}) = \frac{\mathcal{L}(\mathcal{M}_i|\mathbf{x})}{\sum_{j=1}^{N}\mathcal{L}(\mathcal{M}_j|\mathbf{x})}
+    \mathcal{P}(\mathcal{M}_ i|\mathbf{x}) = \frac{\mathcal{L}(\mathcal{M}_ i|\mathbf{x})}{\sum_{j=1}^{N}\mathcal{L}(\mathcal{M}_j|\mathbf{x})}
 $$
+
 which is just the softmax of the $\text{AIC's}$
+
 $$
 \begin{align*}
-    \mathcal{P}(\mathcal{M}_i|\mathbf{x}) &= \text{softmax}\Big(-\frac{1}{2}\Delta_i(\text{AIC})\Big) \\
+    \mathcal{P}(\mathcal{M}_ i|\mathbf{x}) &= \text{softmax}\Big(-\frac{1}{2}\Delta_i(\text{AIC})\Big) \\
     &= \text{softmax}\Big(-\frac{1}{2}(-2\ln\mathcal{\hat L_i} - (-2)\ln\mathcal {\hat L_ {min}})\Big) \\
     &= \text{softmax}\Big(\ln\mathcal{\hat L_i} - \ln\mathcal {\hat L_ {min}}\Big) \\
     &= \text{softmax}\Big(\ln\mathcal{\hat L_i}\Big)
 \end{align*}
 $$
+
 The last simplification is possible, since $\mathcal{\hat L_{min}}$ is the same for all models and therefore factors out in the softmax. 
 Leaving us with the softmax of the maximised log-likelihoods $\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)$. <br>
 The model with the highest posterior probability $\mathcal{P}(\mathcal{M}_i|\mathbf{x})$ is considered the best fit to the data. <br>
@@ -292,8 +305,9 @@ To get the Likelihood $\mathcal{L}_{H_0}(\mathbf{x}|\mathcal{M}_j)$ of the null 
 we can sample likelihood samples from the diffusion model without any conditioning and then evaluate the likelihood of the observed data $\mathbf{x}$ with a Gaussian KDE. <br> 
 
 The Bayes Factor is defined as:
+
 $$
-    K = \frac{\mathcal{L}_{\mathcal{M}_j}(\mathbf{x}|\mathcal{M}_j)}{\mathcal{L}_{H_0}(\mathbf{x}|\mathcal{M}_j)}
+    K = \frac{\mathcal{L}_ {\mathcal{M}_ j}(\mathbf{x}|\mathcal{M}_ j)}{\mathcal{L}_{H_0}(\mathbf{x}|\mathcal{M}_j)}
 $$
 
 A Bayes Factor of $K<1$ favors the null hypothesis $H_0$ and with a Bayes Factor of $K>1$ we can reject the null hypothesis. <br>
