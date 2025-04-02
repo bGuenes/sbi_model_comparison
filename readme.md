@@ -1,8 +1,9 @@
-# Bayesian Model Comparison with Simulation-Based Inference
+# Simulation-Based Bayesian Model Comparison
 
 This repo explores a novel approach to Simulation-Based Inference (SBI) and Bayesian Model Comparisan by leveraging a [**score-based diffusion model**](https://arxiv.org/abs/2011.13456) combined with a [**transformer architecture**](https://arxiv.org/abs/1706.03762) [[Peebles et al.](https://arxiv.org/abs/2212.09748), [Gloecker et al.](https://arxiv.org/abs/2404.09636)]. <br>
 The model utilizes an **attention mask** to conditionally predict both the **posterior distribution** and the **likelihood** of the data. <br>
-By employing the [**harmonic mean estimator**](https://academic.oup.com/rasti/article/2/1/710/7382245), we efficiently compute the **evidence** required for **Bayesian model comparison**. <br>
+By calculating the **log-likelihood** of the **MAP-parameters** for observations, we can compare the fit of different simulators to the data. <br>
+
 
 This framework is applied to compare different yield sets in a simulator for stellar abundances from galactic and stellar parameters ([**CHEMPY**](https://arxiv.org/pdf/1909.00812)), providing a robust and scalable method for likelihood-free inference in high-dimensional parameter spaces.
 
@@ -19,8 +20,8 @@ flowchart LR
     D --> F([MAP])
 
     F --> |evaluate likelihood| C
-    C & D --> G([Marginal Likelihood])
-    C & G --> H([Updated Model Prior])
+    C --> |gaussian KDE| H([Likelihood $p(x|\hat \theta)$])
+    E --> |evaluate likelihood| H
     
 ```
 
@@ -211,74 +212,99 @@ Distribution Denoising | Single Sample Denoising
 
 ---
 ---
-## Bayesian Model Comparison
+## Model Comparison
 
-We have different models $\mathcal{M}$, that can describe our system (different yield sets). Our goal is to infere which model $\mathcal{M}$ is best suited to describe the observations $x$. <br>
-We use Bayes' theorem to compare the models.
+### Problem Statement
+In scientific modeling, we often have competing models or hypotheses that could explain observed data. Model comparison provides a principled framework to evaluate the relative plausibility of these models given empirical observations. With model comparison we try to answer the question: "Which model is more likely to have generated the observed data?"
 
-$$ \begin{align*}
-P(\theta|x;\mathcal{M}) &= \frac{P(x|\theta;\mathcal{M})P(\theta|\mathcal{M})}{P(x|\mathcal{M})} = \frac{\mathcal{L}(\theta) \cdot \pi(\theta)}{z} \\ \\
-\text{Posterior} &= \frac{\text{Likelihood} \times \text{Prior}}{\text{Evidence}}
-\end{align*} $$
+In our case the competing models $\mathcal{M}_i$ are different nucleosynthesis yield sets in the $CHEMPY$ simulator. We therefore can formulate our problem of which yield set is the best fit to the observed data as a model comparison problem of competing simulators. <br>
 
-A crucial part of the model comparison is the computation of the evidence or marginal likelihood $z$. The evidence is the probability of  observing the data over all parameters $\theta$ and can be computed by marginalizing the likelihood over the prior. <br>
+### Likelihood-Free Inference
+Due to the complexity of the simulator we can not evaluate the likelihood of the data. This is the reason why we use the Simulation-Based Inference (SBI) framework, where we use the simulator to generate synthetic data which is then used to train the diffusion model. <br>
+Because the diffusion model is fed with the joint $(\theta, \mathbf{x})$ and a condition mask $\mathcal{M}_C$, indicating whether a value is observed or latent, we can use the model as a Neural Likelihood Estimator (NLE) and a Neural Posterior Estimator (NPE). <br>
 
+By providing the model with the observation data $\mathbf{x}$ we can create samples from the posterior distribution $p(\theta|\mathbf{x})$. <br>
+After calculating the MAP-parameters $\hat \theta$ from the posterior samples, we can generate samples from the likelihood $p(\mathbf{x}|\hat \theta)$ using the diffusion model with an inverted condition mask $\mathcal{M}_C$. <br>
+
+#### Log-Likelihood Estimation
+The log-likelihood of the data given the MAP-parameters of model $\mathcal{M}_i$ can be estimated by using a Gaussian Kernel Density Estimator (KDE) on the samples of the likelihood $p(\mathbf{x}|\hat \theta)$ generated with the diffusion model and then evaluating the KDE at the observed data $\mathbf{x}$. <br>
+
+#### Model Comparison
+To compare the models with the maximized log-likelihood $\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)$ we can use the [Akaike Information Criterion (AIC)](https://en.wikipedia.org/wiki/Akaike_information_criterion#) which is an estimation of the predictive error of the model, derived from the Kullback-Leibler divergence to the true model. Since the true model is unknown, the AIC can only give a relative information loss between the provided models. This however is sufficient to compare the models in our case. <br>
+The AIC is defined as:
 $$
-P(\text{data}) = \int P(\text{data}|\theta)P(\theta) d\theta
+    \text{AIC}_i = -2\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i) + 2k
+$$
+where $k$ is the number of parameters in the model. <br>
+The model with the lowest AIC is considered the best fit to the data. <br>
+In case of a relativly small sample size $n$ ($\frac{n}{k}<40$), which in our case is true, since we use a NN with a high number of parameters $k$, the corrected AIC ([AICc](https://link.springer.com/book/10.1007/b97636)) should be used:
+$$
+\begin{align*}
+    \text{AICc}_i &= \text{AIC}_i + \frac{2k(k+1)}{n-k-1} \\
+    &= -2\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i) + 2k + \frac{2k(k+1)}{n-k-1}
+\end{align*} 
+$$
+where $n$ is the sample size and $k$ the parameter count of the model. <br>
+The AICc is a small-sample correction to the AIC that approximates the AIC in the limit of large sample sizes and is therefore more suitble in general. <br>
+However in our case we are not interested in the absolute AIC values, but rather the relative AIC values in comparison between the models, where all models have the same sample size $n$ and parameter count $k$. 
+Therefore it is sufficient to use the AIC without all $k$ and $n$ terms in the AIC, since they are the same for all models and would factor out in the comparison. <br>
+The AIC can be simplified to:
+$$
+    \text{AIC}_i = -2\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)
 $$
 
-### Learned Harmonic Mean Estimator
-Unfortunately in a high-dimensional parameter space, the evidence is computationally intractable. <br>
-The learned harmonic mean estimator gives us a method to estimate the evidence for that case with the use of importance sampling. <br> 
-
-We utilize the fact that the harmonic mean of the likelihoods is the reciprocal of the evidence. <br>
-The harmonic mean estimator is given by [[Newton & Raftery 1994](https://www.jstor.org/stable/2346025)]:
-
-$$ \begin{align*}
-\rho &= \mathbb{E}_ {P(\theta|x)} [\frac1{\mathcal{L}(\theta)}] \\
- &= \int d\theta \frac1{\mathcal{L}(\theta)}P(\theta|x) \\
- &= \int d\theta \frac1{\mathcal{L}(\theta)}\frac{\mathcal{L}(\theta) \pi(\theta)}{z} \\
- &= \frac1z \\
-=> \hat\rho &=\frac1N \sum_{i=1}^{N} \frac1{\mathcal{L}(\theta)}
-\end{align*} $$
-
-If we treat this as an importance sampling problem, we can elimate the problem of an exploding variance. <br>
-Therefore we introduce a new target distribution $\phi(\theta)$. <br>
-The harmonic mean estimator can then be re-written as [[Mancini et al. 2023](https://academic.oup.com/rasti/article/2/1/710/7382245#supplementary-data)]:
-
+In general AIC is used to compare two competing models $\mathcal{M}_1$ and $\mathcal{M}_2$ with the following equation:
 $$
-\rho = z^{-1} = \frac1N \sum_ {i=1}^{N} \frac{\phi(\theta_ i)}{\mathcal{L}(\theta_ i)\pi(\theta_ i)}, \quad \text{where } \theta_ i \sim p(\theta|\text{data})
+    z = \exp\Big(\frac{1}{2}(\text{AIC}_1-\text{AIC}_2)\Big),
+$$
+where $z$ is a measure of how much more probable the model $\mathcal{M}_2$ is compared to $\mathcal{M}_1$. <br>
+We are comparing however more than two models, so to get a measure of how probable each model is to describe the observation, 
+we can utalize that $\Delta_i(\text{AIC})$ is proportional to the likelihood of the model $\mathcal{M}_i$ given the data $\mathbf{x}$:
+$$
+\begin{align*}
+    \Delta_i(\text{AIC}) &= \text{AIC}_i - \text{AIC}_{min} \\
+    \mathcal{L}(\mathcal{M}_i|\mathbf{x}) &\propto \exp\Big(-\frac{1}{2}\Delta_i(\text{AIC})\Big)
+\end{align*}
+$$
+where $\Delta_i(\text{AIC})$ is the difference between the AIC of model $\mathcal{M}_i$ and the minimum AIC of all models. <br>
+These model likelihoods can be normalised to get the posterior model probabilities [(Akaike weights)](https://doi.org/10.3758/BF03206482):
+$$
+    \mathcal{P}(\mathcal{M}_i|\mathbf{x}) = \frac{\mathcal{L}(\mathcal{M}_i|\mathbf{x})}{\sum_{j=1}^{N}\mathcal{L}(\mathcal{M}_j|\mathbf{x})}
+$$
+which is just the softmax of the $\text{AIC's}$
+$$
+\begin{align*}
+    \mathcal{P}(\mathcal{M}_i|\mathbf{x}) &= \text{softmax}\Big(-\frac{1}{2}\Delta_i(\text{AIC})\Big) \\
+    &= \text{softmax}\Big(-\frac{1}{2}(-2\ln\mathcal{\hat L_i} - (-2)\ln\mathcal {\hat L_ {min}})\Big) \\
+    &= \text{softmax}\Big(\ln\mathcal{\hat L_i} - \ln\mathcal {\hat L_ {min}}\Big) \\
+    &= \text{softmax}\Big(\ln\mathcal{\hat L_i}\Big)
+\end{align*}
+$$
+The last simplification is possible, since $\mathcal{\hat L_{min}}$ is the same for all models and therefore factors out in the softmax. 
+Leaving us with the softmax of the maximised log-likelihoods $\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)$. <br>
+The model with the highest posterior probability $\mathcal{P}(\mathcal{M}_i|\mathbf{x})$ is considered the best fit to the data. <br>
+
+#### Significance Test
+In order to determine the significance of the model $\mathcal{M}_j$ with the highest posterior probability $\mathcal{P}(\mathcal{M}_j|\mathbf{x})$, 
+we can use the Bayes Factor to test the null hypothesis $H_0$ against the model $\mathcal{M}_j$. <br>
+
+To get the Likelihood $\mathcal{L}_{H_0}(\mathbf{x}|\mathcal{M}_j)$ of the null hypothesis $H_0$ under model $\mathcal{M}_j$ 
+we can sample likelihood samples from the diffusion model without any conditioning and then evaluate the likelihood of the observed data $\mathbf{x}$ with a Gaussian KDE. <br> 
+
+The Bayes Factor is defined as:
+$$
+    K = \frac{\mathcal{L}_{\mathcal{M}_j}(\mathbf{x}|\mathcal{M}_j)}{\mathcal{L}_{H_0}(\mathbf{x}|\mathcal{M}_j)}
 $$
 
-Where we sample from the posterior distribution and calculate the likelihood of the sample.<br>
-The ideal target distribution $\phi(\theta)$ is the posterior distribution $p(\theta|\text{data})$ which we can learn using SBI, like described in the previous section. 
-<br>
+A Bayes Factor of $K<1$ favors the null hypothesis $H_0$ and with a Bayes Factor of $K>1$ we can reject the null hypothesis. <br>
+The absolute value can be interpreted as a measure of the strength of evidence against the null hypothesis $H_0$. <br>
+A table by [Kass and Raftery (1995)](https://www.tandfonline.com/doi/abs/10.1080/01621459.1995.10476572) provides a guideline for interpreting the Bayes Factor:
 
-> **_NOTE:_** The paper states, that the target distribution $\phi(\theta)$ should not be the learned NPE, but instead be a different model, that however approximates the posterior aswell. <br>
- Honestly I'm not really sure yet what this means! <br>
+| Bayes Factor (K) | Evidence Strength                  |
+|:----------------:|------------------------------------|    
+| 1 - 3.2          | Not worth more than a bare mention |
+| 3.2 - 10         | Substantial                        |
+| 10 - 100         | Strong                             |
+| > 100            | Decisive                           |
 
-Now the benefit of using a diffusion model for SBI comes into play. 
-The diffusion model from the previous section can be used to estimate the likelihood $\mathcal{L}(\theta)$
- and the posterior $\phi(\theta)$ of our system, 
- meaning it is just needed to train one model to estimate the evidence $z$. <br>
 
-### Evidence Calculation
-
-1. Take observation sample $x_i$
-
-2. Sample posterior $\theta_{i;j} \sim P_j(\theta|x_i)$ using the diffusion model for each model $\mathcal{M_j}$
-
-3. Evaluate likelihood at sample position $\mathcal{L}_ j (\theta_ {i;j})$ also using the diffusion model
-
-$=>$  Compute evidence $z$ by repeating $1.-3.$ $N$-times and then using the harmonic mean estimator $\hat \rho = \frac1N \sum_{i=1}^{N} \frac{\phi(\theta_i)}{\mathcal{L}(\theta_i)\pi(\theta_i)}$
-
-### Model Comparison
-To predict the best fitting model, we use Bayes update rule to calculate the posterior probability of each model. <br>
-
-$$ \begin{align*}
-P(\mathcal{M}_ j|x) &= \frac{P(x|\mathcal{M}_ j) P(\mathcal{M}_ j)}{P(x)} \\\\
-&= \frac{\mathcal{L}_ j(\theta_ {i;j}) \cdot \pi(\mathcal{M}_ j)}{z}
-\end{align*} $$
-
-We start with a uniform prior over the models. By evaluating multiple observations, the posterior probability of each model can be updated. <br>
-The model with the highest posterior probability is the best fitting model. <br>
