@@ -226,10 +226,10 @@ Because the diffusion model is fed with the joint $(\theta, \mathbf{x})$ and a c
 By providing the model with the observation data $\mathbf{x}$ we can create samples from the posterior distribution $p(\theta|\mathbf{x})$. <br>
 After calculating the MAP-parameters $\hat \theta$ from the posterior samples, we can generate samples from the likelihood $p(\mathbf{x}|\hat \theta)$ using the diffusion model with an inverted condition mask $\mathcal{M}_C$. <br>
 
-#### Log-Likelihood Estimation
+### Log-Likelihood Estimation
 The log-likelihood of the data given the MAP-parameters of model $\mathcal{M}_i$ can be estimated by using a Gaussian Kernel Density Estimator (KDE) on the samples of the likelihood $p(\mathbf{x}|\hat \theta)$ generated with the diffusion model and then evaluating the KDE at the observed data $\mathbf{x}$. <br>
 
-#### Model Comparison
+### Model Comparison
 To compare the models with the maximized log-likelihood $\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)$ we can use the [Akaike Information Criterion (AIC)](https://en.wikipedia.org/wiki/Akaike_information_criterion#) which is an estimation of the predictive error of the model, derived from the Kullback-Leibler divergence to the true model. Since the true model is unknown, the AIC can only give a relative information loss between the provided models. This however is sufficient to compare the models in our case. <br>
 The AIC is defined as:
 
@@ -297,7 +297,7 @@ The last simplification is possible, since $\mathcal{\hat L_{min}}$ is the same 
 Leaving us with the softmax of the maximised log-likelihoods $\ln\mathcal{L}(\mathbf{x}|\hat \theta, \mathcal{M}_i)$. <br>
 The model with the highest posterior probability $\mathcal{P}(\mathcal{M}_i|\mathbf{x})$ is considered the best fit to the data. <br>
 
-#### Significance Test
+### Significance Test
 In order to determine the significance of the model $\mathcal{M}_j$ with the highest posterior probability $\mathcal{P}(\mathcal{M}_j|\mathbf{x})$, 
 we can use the Bayes Factor to test the null hypothesis $H_0$ against the model $\mathcal{M}_j$. <br>
 
