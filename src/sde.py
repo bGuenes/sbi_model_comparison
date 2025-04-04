@@ -4,6 +4,19 @@ import numpy as np
 # --------------------------------------------------------------------------------------------------
 # Stochastic Differential Equations
 
+#################################################################################################
+# ///////////////////////////// Stochastic Differential Equations ///////////////////////////////
+#################################################################################################
+
+""" 
+    Stochastic Differential Equations (SDEs) for diffusion models.
+    - VESDE: Variance Exploding SDE
+    - VPSDE: Variance Preserving SDE
+"""
+
+#############################################
+# ----- VESDE -----
+#############################################
 class VESDE():
     def __init__(self, sigma=25.0):
         """
@@ -28,26 +41,16 @@ class VESDE():
         except:
             return torch.sqrt((self.sigma ** (2 * t) - 1.0) / (2 * np.log(self.sigma)))
         
-    def alpha_t(self, t):
-        """
-        Compute alpha_t for VESDE, which is always 1.
-        """
-        return torch.ones_like(t)
-    
     def sigma_t(self, t):
         """
         Compute sigma_t (noise standard deviation).
         """
         return self.marginal_prob_std(t)
-    
-    def lambda_t(self, t):
-        """
-        Compute lambda_t = -log(sigma_t) / 2.
-        """
-        sigma_t = self.sigma_t(t)
-        return -0.5 * torch.log(sigma_t ** 2)
 
-
+#############################################
+# ----- VPSDE -----
+#############################################
 class VPSDE():
     def __init__(self):
         raise NotImplementedError("VPSDE is not implemented yet.")
+    

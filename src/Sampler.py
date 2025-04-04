@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.multiprocessing as mp
-import numpy as np
+
 import tqdm
 import datetime
 import os
@@ -24,10 +24,10 @@ class TensorTupleDataset(Dataset):
 # ////////////////////////////////////////// Sampling //////////////////////////////////////////
 #################################################################################################
 class Sampler():
-    def __init__(self, MTf):
-        self.MTf = MTf
+    def __init__(self, SBIm):
+        self.SBIm = SBIm
         # Get SDE from model for calculations
-        self.sde = self.MTf.sde
+        self.sde = self.SBIm.sde
 
         #############################################
     # ----- Main Sampling Loop -----
@@ -106,7 +106,7 @@ class Sampler():
         if self.world_size > 1:
             self._ddp_setup(rank, self.world_size)
         else:
-            self.model = self.MTf.model.to(self.device)
+            self.model = self.SBIm.model.to(self.device)
         
         # Check data structure
         data_loader, self.num_observations = self._check_data_structure(data, condition_mask)
@@ -168,10 +168,10 @@ class Sampler():
             timeout=datetime.timedelta(seconds=100_000_000)
         )
 
-        self.MTf.model.eval()
+        self.SBIm.model.eval()
         self.device = torch.device(f'cuda:{rank}')
-        self.MTf.model.to(self.device)
-        self.model = DDP(self.MTf.model, device_ids=[rank])
+        self.SBIm.model.to(self.device)
+        self.model = DDP(self.SBIm.model, device_ids=[rank])
             
     def _gather_samples(self, all_samples, indices, result_dict):
         # Gather samples from all processes
@@ -205,12 +205,12 @@ class Sampler():
         # Get conditional score
         with torch.no_grad():
             score_cond = self.model(x=x, t=t, c=condition_mask)
-            score_cond = self.MTf.output_scale_function(t, score_cond)
+            score_cond = self.SBIm.output_scale_function(t, score_cond)
             
             # Apply classifier-free guidance if requested
             if cfg_alpha is not None:
                 score_uncond = self.model(x=x, t=t, c=torch.zeros_like(condition_mask))
-                score_uncond = self.MTf.output_scale_function(t, score_uncond)
+                score_uncond = self.SBIm.output_scale_function(t, score_uncond)
                 score = score_uncond + cfg_alpha * (score_cond - score_uncond)
             else:
                 score = score_cond

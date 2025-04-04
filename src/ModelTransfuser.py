@@ -1,91 +1,146 @@
+import os
+import sys
+
 import torch
 import torch.nn as nn
 
-from src.ConditionTransformer import DiT
-from src.sde import VESDE, VPSDE
-from src.Sampler import Sampler
-from src.Trainer import Trainer
-from src.MultiObsSampler import MultiObsSampler
+import numpy as np
 
-# --------------------------------------------------------------------------------------------------
+import scipy
+from scipy import optimize
+from scipy.stats import norm, gaussian_kde
 
-class ModelTransfuser(nn.Module):
-    # ------------------------------------
-    # /////////// Initialization ///////////
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-    def __init__(
-            self,
-            nodes_size, 
-            sde_type="vesde",
-            sigma=25.0,
-            hidden_size=128,
-            depth=6,
-            num_heads=16,
-            mlp_ratio=4,
-            ):
-        
-        super(ModelTransfuser, self).__init__()
+from src.ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
 
-        self.nodes_size = nodes_size
-        self.sde_type = sde_type
-        self.sigma = sigma
-        self.hidden_size = hidden_size
-        self.depth = depth
-        self.num_heads = num_heads
-        self.mlp_ratio = mlp_ratio
+#################################################################################################
+# ///////////////////////////////////// Model Comparison ////////////////////////////////////////
+#################################################################################################
 
-        # initialize SDE
-        self.sigma = sigma
-        if sde_type == "vesde":
-            self.sde = VESDE(sigma=self.sigma)
-        elif sde_type == "vpsde":
-            self.sde = VPSDE()
-        else:
-            raise ValueError("Invalid SDE type")
-        
-        # define model
-        self.model = DiT(nodes_size=self.nodes_size, hidden_size=hidden_size, 
-                                       depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio)
-        
-        # Define Trainer
-        self.trainer = Trainer(self)
-        # Define Sampler
-        self.sampler = Sampler(self)
-        self.multi_obs_sampler = MultiObsSampler(self)
-        
-    # ------------------------------------
-    # /////////// Helper functions ///////////
+class ModelTransfuser():
+    def __init__(self):
+        self.models_dict = {}
+        self.data_dict = {}
+        self.trained_models = False # Flag to check if models are trained
 
-    def forward_diffusion_sample(self, x_0, t, x_1=None, condition_mask=None):
-        # Diffusion process for time t with defined SDE
-        
-        if condition_mask is None:
-            condition_mask = torch.zeros_like(x_0)
+    #############################################
+    # ----- Model Management -----
+    #############################################
 
-        if x_1 is None:
-            x_1 = torch.randn_like(x_0)*(1-condition_mask)+(condition_mask)*x_0
-
-        std = self.sde.marginal_prob_std(t).reshape(-1, 1).to(x_0.device)
-        x_t = x_0 + std * x_1 * (1-condition_mask)
-        return x_t
-    
-    def output_scale_function(self, t, x):
-        scale = self.sde.marginal_prob_std(t).to(x.device)
-        return x / scale
-    
-    # ------------------------------------
-    # /////////// Training ///////////
-    
-    def train(self, data, condition_mask_data=None, 
-                batch_size=128, max_epochs=500, lr=1e-3, device="cpu", 
-                val_data=None, condition_mask_val=None, 
-                verbose=True, path=None, early_stopping_patience=20):
+    # Add a trained model to the transfuser
+    def add_model(self, model_name, model):
         """
-        Train the model on the provided data
+        Add a trained model to the transfuser.
 
         Args:
-            data: Training data : Tensor of shape (num_samples, num_features)
+            model_name: The name of the model.
+            model: The model itself.
+        """
+        self.models_dict[model_name] = model
+        self.trained_models = True
+        print(f"Model {model_name} added to transfuser.")
+
+    # Add multiple trained models to the transfuser
+    def add_models(self, models_dict):
+        """
+        Add multiple trained models to the transfuser.
+
+        Args:
+            models_dict: A dictionary of models to add.
+        """
+        for model_name, model in models_dict.items():
+            self.add_model(model_name, model)
+
+        self.trained_models = True
+        print("All models added to transfuser.")
+
+    # Add data to a model
+    def add_data(self, model_name, train_data, val_data=None):
+        """
+        Add training and validation data to a model.
+
+        Args:
+            model_name: The name of the model.
+            train_data: The training data.
+            val_data: The validation data (optional).
+        """
+        if val_data is None:
+            self.data_dict[model_name] = {
+                "train_data": train_data
+            }
+        else:
+            self.data_dict[model_name] = {
+                "train_data": train_data,
+                "val_data": val_data
+            }
+        self.trained_models = False
+        print(f"Data added to model {model_name}")
+
+    # Remove a model from the transfuser
+    def remove_model(self, model_name):
+        """
+        Remove a model from the transfuser.
+
+        Args:
+            model_name: The name of the model to remove.
+        """
+        if model_name in self.models_dict:
+            del self.models_dict[model_name]
+            print(f"Model {model_name} removed from transfuser.")
+        else:
+            print(f"Model {model_name} not found in transfuser.")
+
+    #############################################
+    # ----- Initialize Models -----
+    #############################################
+
+    def init_models(self, sde_type, sigma, hidden_size, depth, num_heads, mlp_ratio):
+        """
+        Initialize the Score-Based Inference Models with the given parameters
+
+        Args:
+            sde_type: The type of SDE
+            sigma: The sigma value
+            hidden_size: The size of the hidden layer
+            depth: The depth of the model
+            num_heads: The number of heads in the model
+            mlp_ratio: The MLP ratio
+        """
+
+        if self.trained_models:
+            print("Models are already trained. This will overwrite the models.")
+            return
+        else:
+            init_models = []
+            for model_name in self.data_dict.keys():
+                self.models_dict[model_name] = SBIm(nodes_size=self.data_dict[model_name]["train_data"].shape[1],
+                                                    sde_type=sde_type,
+                                                    sigma=sigma,
+                                                    hidden_size=hidden_size,
+                                                    depth=depth,
+                                                    num_heads=num_heads,
+                                                    mlp_ratio=mlp_ratio)
+                init_models.append(model_name)
+
+            print(f"Models initialized: {init_models}")
+
+    #############################################
+    # ----- Train Models -----
+    #############################################
+    def train_models(self, condition_mask_data=None, condition_mask_val=None, 
+                batch_size=128, max_epochs=500, lr=1e-3, device="cuda",
+                verbose=False, path=None, early_stopping_patience=20): 
+        
+        """
+        Train the models on the provided data
+
+        Args:
             condition_mask_data: Binary mask indicating observed values (1) and latent values (0)
+                    Shape: (num_samples, num_total_features)
+                    Optional
+            condition_mask_val: Binary mask indicating observed values (1) and latent values (0)
                     Shape: (num_samples, num_total_features)
                     Optional
             batch_size: Batch size for training
@@ -93,111 +148,193 @@ class ModelTransfuser(nn.Module):
             lr: Learning rate
             device: Device to run training on
                     if "cuda", training will be distributed across all available GPUs
-            val_data: Validation data : Tensor of shape (num_samples, num_features)
-            condition_mask_val: Binary mask indicating observed values (1) and latent values (0)
-                    Shape: (num_samples, num_total_features)
-                    Optional
             verbose: Whether to show training progress
             path: Path to save model
             early_stopping_patience: Number of epochs to wait before early stopping
         """
 
-        if device == "cuda":
-            world_size = torch.cuda.device_count()
-        else :
-            world_size = 1
+        if self.trained_models:
+            print("Continue training existing models.")
 
-        self.trainer.train(world_size=world_size, train_data=data, condition_mask_data=condition_mask_data, val_data=val_data, condition_mask_val=condition_mask_val,
-                            max_epochs=max_epochs, early_stopping_patience=early_stopping_patience, batch_size=batch_size, lr=lr,
-                            path=path, device=device, verbose=verbose)
+        for model_name in self.models_dict.keys():
+            model = self.models_dict[model_name]
+            data = self.data_dict[model_name]["train_data"]
+            val_data = self.data_dict[model_name].get("val_data", None)
 
-    # ------------------------------------
-    # /////////// Sample ///////////
-        
-    def sample(self, data, condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
+            model.train(data=data, condition_mask_data=condition_mask_data, 
+                        batch_size=batch_size, max_epochs=max_epochs, lr=lr, device=device,
+                        val_data=val_data, condition_mask_val=condition_mask_val,
+                        verbose=verbose, path=path, name=model_name ,early_stopping_patience=early_stopping_patience)
+
+            load_path = f"{path}/{model_name}.pt"
+            self.models_dict[model_name] = SBIm.load(path=load_path, device="cpu")
+            print(f"Model {model_name} trained")
+
+        self.trained_models = True
+
+    #############################################
+    # ----- Model Comparison -----
+    #############################################
+
+    def compare(self, observations, condition_mask, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
-               device="cpu", verbose=True, method="dpm", save_trajectory=False):
+               device="cuda", verbose=False, method="dpm"):
         """
-        Sample from the model using the specified method
+        Compare the models on the provided observations
 
         Args:
-            data: Input data : Tensor of shape (num_samples, num_observed_features)
+            observations: The observations to compare the models on
             condition_mask: Binary mask indicating observed values (1) and latent values (0)
                     Shape: (num_samples, num_total_features)
-            timesteps: Number of diffusion steps
-            eps: End time for diffusion process
+                    Optional
+            timesteps: Number of timesteps for the model
+            eps: Epsilon value for the model
             num_samples: Number of samples to generate
-            cfg_alpha: Classifier-free guidance strength
-
-            - DPM-Solver parameters -
-            order: Order of DPM-Solver (1, 2 or 3)
-            snr: Signal-to-noise ratio for Langevin steps
-            corrector_steps_interval: Interval for applying corrector steps
-            corrector_steps: Number of Langevin MCMC steps per iteration
-            final_corrector_steps: Extra correction steps at the end
-
-            - Other parameters -
-            device: Device to run sampling on
-            verbose: Whether to show progress bar
-            method: Sampling method to use (euler, dpm)
-            save_trajectory: Whether to save the intermediate denoising trajectory
+            cfg_alpha: CFG alpha value for the model
+            multi_obs_inference: Whether to use multi-observation inference
+            hierarchy: Hierarchy for the model
+            order: Order of the model
+            snr: Signal-to-noise ratio for the model
+            corrector_steps_interval: Corrector steps interval for the model
+            corrector_steps: Corrector steps for the model
+            final_corrector_steps: Final corrector steps for the model
+            device: Device to run inference on
+            verbose: Whether to show inference progress
+            method: Method to use for inference
         """
 
+        if not self.trained_models:
+            print("Models are not trained or provided. Please train the models before comparing.")
+            return
         
-        if device == "cuda":
-            # Run sampling on all available GPUs
-            world_size = torch.cuda.device_count()
+        if condition_mask.sum() != observations.shape[1]:
+            print("Condition mask does not match the shape of the observations.\nPlease provide a condition mask fitting to the observed features (1) and latent features (0).")
+            return
+        
+        self.stats = {}
+        self.model_null_log_probs = {}
+    
+        
+        for model_name, model in self.models_dict.items():
+            self.stats[model_name] = {}
+            ####################
+            # Posterior sampling
+            posterior_samples = model.sample(data=observations, condition_mask=condition_mask, timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+                                            multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
+                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                            device=device, verbose=verbose, method=method)
+            posterior_samples = posterior_samples[:,:,(1-condition_mask).bool()].cpu().numpy()
+
+            # MAP estimation
+            theta_hat = torch.tensor([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
+            MAP_posterior, std_MAP_posterior = theta_hat[:,0], theta_hat[:,1]
+
+            # Storing MAP and std MAP
+            self.stats[model_name]["MAP"] = theta_hat
+
+            ####################
+            # Null Hypothesis
+            null_samples = model.sample(data=torch.zeros(model.nodes_size), condition_mask=condition_mask, timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+                                            multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
+                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                            device=device, verbose=verbose, method=method)
+            null_samples = null_samples.cpu().numpy()
+            null_samples = null_samples[:,:,condition_mask.bool()]
+
+            # Log probability of null hypothesis
+            null_log_probs = torch.tensor([self._log_prob(null_samples, observations[i]) for i in range(len(observations))])
+            self.stats[model_name]["log_probs_nullHyp"] = null_log_probs
+
+            ####################
+            # Likelihood sampling
+            likelihood_samples = model.sample(data=MAP_posterior, condition_mask=(1-condition_mask), timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+                                            multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
+                                            order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
+                                            device=device, verbose=verbose, method=method)
+            likelihood_samples = likelihood_samples[:,:,condition_mask.bool()].cpu().numpy()
+
+            # Log probability of likelihood
+            log_probs = torch.tensor([self._log_prob(likelihood_samples[i], observations[i]) for i in range(len(observations))])
+            self.stats[model_name]["log_probs"] = log_probs
+            self.stats[model_name]["AIC"] = log_probs.sum() 
+
+            # Null Hypothesis test
+            self.stats[model_name]["Bayes_Factor_Null_Hyp"] = log_probs - null_log_probs
+
+        # Calculate Model Probabilitys from AICs
+        aics = [self.stats[model_name]["AIC"] for model_name in self.stats.keys()]
+        aics = torch.tensor(aics)
+        model_probs = nn.Softmax(aics)
+
+        for model_name in self.stats.keys():
+            self.stats[model_name]["model_prob"] = model_probs
+
+        model_names = list(self.stats.keys())
+        best_model = model_names[model_probs.argmax()]
+        best_model_prob = 100*model_probs.max()
+
+        # Null Hypothesis test
+        best_bayes_factor = self.stats[best_model]["Bayes_Factor_Null_Hyp"]
+        hypothesis_test = "could" if best_bayes_factor > 0 else "could not"
+        hypothesis_test_strength = self._bayes_factor_strength(best_bayes_factor)
+
+        print("Probabilities of the models:")
+        for i in range(len(model_names)):
+            print(f"{model_names[i]}: {100*self.stats[model_names[i]]['model_prob']:.3f} %")
+        print()
+        print(f"Model {best_model} fits the data best " + 
+      f"with a relative support of {best_model_prob:.1f}% among the considered models "+
+      f"and {hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
+
+    #############################################
+    # ----- Kernel Density Estimation -----
+    #############################################
+
+    def _log_prob(self, samples, observation):
+        """Compute the log probability of the samples"""
+        kde = gaussian_kde(samples.T)
+        log_prob = kde.logpdf(observation).item()
+        return log_prob
+
+    def _map_kde(samples):
+        """Find the joint mode of the multivariate distribution"""
+        kde = gaussian_kde(samples.T)  # KDE expects (n_dims, n_samples)
+        
+        # Start optimization from the mean
+        initial_guess = np.mean(samples, axis=0)
+        
+        # Use full minimize with multiple dimensions
+        result = optimize.minimize(lambda x: -kde(x.reshape(-1, 1)), initial_guess)
+        std_devs = np.sqrt(np.diag(kde.covariance))
+
+        return result.x, std_devs
+    
+    ##############################################
+    # ----- Bayes Factor Strenght -----
+    ##############################################
+
+    def _bayes_factor_strength(self, BF):
+        """
+        Calculate the strength of the Bayes factor.
+
+        Args:
+            BF: The Log Bayes factor.
+
+        Returns:
+            The strength of the Bayes factor as a string.
+        """
+        hypothesis_test_strength = np.exp(BF)
+
+        if 1 < hypothesis_test_strength <= 3.2:
+            hypothesis_test_strength = " barley"
+        elif 3.2 < hypothesis_test_strength <= 10:
+            hypothesis_test_strength = " substantially"
+        elif 10 < hypothesis_test_strength <= 100:
+            hypothesis_test_strength = " strongly"
+        elif 100 < hypothesis_test_strength:
+            hypothesis_test_strength = " decisively"
         else:
-            # Run sampling on specified device
-            world_size = 1
-            
-        if multi_obs_inference == False:
-            samples = self.sampler.sample(world_size=world_size, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha,
-                                    order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
-                                    verbose=verbose, method=method, save_trajectory=save_trajectory)
-            
-        elif multi_obs_inference == True:
-            # Hierarchical Compositional Score Modeling
-            samples = self.multi_obs_sampler.sample(world_size=world_size, data=data, condition_mask=condition_mask, timesteps=timesteps, num_samples=num_samples, device=device, cfg_alpha=cfg_alpha, hierarchy=hierarchy,
-                                      order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
-                                      verbose=verbose, method=method, save_trajectory=save_trajectory)
+            hypothesis_test_strength = ""
 
-        return samples
-    
-    # ------------------------------------
-    # /////////// Save & Load ///////////
-    
-    def save(self, path, name="Model"):
-        state_dict = {
-                'model_state_dict' : self.model.state_dict(),
-                'nodes_size': self.nodes_size,
-                'sde_type': self.sde_type,
-                'sigma': self.sigma,
-                'hidden_size': self.hidden_size,
-                'depth': self.depth,
-                'num_heads': self.num_heads,
-                'mlp_ratio': self.mlp_ratio
-            }
-        
-        torch.save(state_dict, f"{path}/{name}.pt")
-        
-    @staticmethod
-    def load(path):
-
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(path, map_location=device)
-
-        model = ModelTransfuser(
-            nodes_size=checkpoint['nodes_size'],
-            sde_type=checkpoint['sde_type'],
-            sigma=checkpoint['sigma'],
-            hidden_size=checkpoint['hidden_size'],
-            depth=checkpoint['depth'],
-            num_heads=checkpoint['num_heads'],
-            mlp_ratio=checkpoint['mlp_ratio']
-        )
-
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-
-        return model
+        return hypothesis_test_strength
     

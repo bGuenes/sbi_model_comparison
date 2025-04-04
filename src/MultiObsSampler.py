@@ -3,7 +3,6 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.multiprocessing as mp
-import numpy as np
 import tqdm
 import datetime
 import os
@@ -21,15 +20,15 @@ class TensorTupleDataset(Dataset):
         return self.tensor1[idx], self.tensor2[idx], idx
 
 #################################################################################################
-# ////////////////////////////////////////// Sampling //////////////////////////////////////////
+# ///////////////////////////////// Multi-Observation Sampling //////////////////////////////////
 #################################################################################################
 class MultiObsSampler():
-    def __init__(self, MTf):
-        self.MTf = MTf
+    def __init__(self, SBIm):
+        self.SBIm = SBIm
         # Get SDE from model for calculations
-        self.sde = self.MTf.sde
+        self.sde = self.SBIm.sde
 
-        #############################################
+    #############################################
     # ----- Main Sampling Loop -----
     #############################################
     
@@ -110,7 +109,7 @@ class MultiObsSampler():
         if self.world_size > 1:
             self._ddp_setup(rank, self.world_size)
         else:
-            self.model = self.MTf.model.to(self.device)
+            self.model = self.SBIm.model.to(self.device)
 
         # Set hierarchy for compositional score modeling to all latent if not provided
         if self.hierarchy is None:
@@ -176,10 +175,10 @@ class MultiObsSampler():
             timeout=datetime.timedelta(seconds=100_000_000)
         )
 
-        self.MTf.model.eval()
+        self.SBIm.model.eval()
         self.device = torch.device(f'cuda:{rank}')
-        self.MTf.model.to(self.device)
-        self.model = DDP(self.MTf.model, device_ids=[rank])
+        self.SBIm.model.to(self.device)
+        self.model = DDP(self.SBIm.model, device_ids=[rank])
             
     def _gather_samples(self, all_samples, indices, result_dict):
         # Gather samples from all processes
@@ -232,13 +231,13 @@ class MultiObsSampler():
         with torch.no_grad():
             score_table = torch.zeros_like(x)
             for i in range(x.shape[0]):
-                score_table[i,:,:] = self.MTf.model(x=x[i], t=t, c=condition_mask[i])
-                score_table[i,:,:] = self.MTf.output_scale_function(t, score_table[i,:,:])
+                score_table[i,:,:] = self.SBIm.model(x=x[i], t=t, c=condition_mask[i])
+                score_table[i,:,:] = self.SBIm.output_scale_function(t, score_table[i,:,:])
 
                 # Apply classifier-free guidance if requested
                 if cfg_alpha is not None:
-                    score_uncond = self.MTf.model(x=x[i], t=t, c=torch.zeros_like(condition_mask[i]))
-                    score_uncond = self.MTf.output_scale_function(t, score_uncond)
+                    score_uncond = self.SBIm.model(x=x[i], t=t, c=torch.zeros_like(condition_mask[i]))
+                    score_uncond = self.SBIm.output_scale_function(t, score_uncond)
                     score_table[i,:,:] = score_uncond + cfg_alpha * (score_table[i,:,:] - score_uncond)
 
             if self.world_size > 1:

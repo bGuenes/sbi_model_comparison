@@ -1,19 +1,29 @@
 import torch
 import torch.nn as nn
-import numpy as np
 import math
-from functools import partial
-from itertools import repeat
-import collections.abc
 
+#################################################################################################
+# ///////////////////////////////////////// Transformer /////////////////////////////////////////
+#################################################################################################
+
+"""
+    Transformer model for diffusion models.
+    
+    - modulate: Modulates the input with shift and scale.
+    - InputEmbedder: Embeds joint data into vector representations.
+    - TimestepEmbedder: Embeds scalar timesteps into vector representations.
+    - Mlp: MLP for Output of Self-Attention
+    - TransformerBlock: A ConditionTransformer block with adaptive layer norm zero (adaLN-Zero) conditioning.
+    - FinalLayer: The final layer of ConditionTransformer.
+    - ConditionTransformer: Transformer model for diffusion models.
+"""
 
 def modulate(x, shift, scale):
     return x * (1 + scale) + shift
 
-
-#################################################################################
-#                   Embedding Layers for Inputs and Timesteps                   #
-#################################################################################
+#############################################
+# ----- Timestep & Input Embedding -----
+#############################################
 
 class InputEmbedder(nn.Module):
     """
@@ -68,9 +78,9 @@ class TimestepEmbedder(nn.Module):
         t_emb = self.mlp(t_freq)
         return t_emb
     
-#################################################################################
-#                               Multi-Layer Perceptron                          #
-#################################################################################
+#############################################
+# ----- MLP -----
+#############################################
 
 class Mlp(nn.Module):
     """
@@ -100,14 +110,13 @@ class Mlp(nn.Module):
 
         return x
 
+#############################################
+# ----- Core ConditionTransformer Model -----
+#############################################
 
-#################################################################################
-#                                 Core DiT Model                                #
-#################################################################################
-
-class DiTBlock(nn.Module):
+class TransformerBlock(nn.Module):
     """
-    A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
+    A ConditionTransformer block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
     def __init__(self, hidden_size, num_heads, nodes_size, mlp_ratio=4.0, time_embedding_size=256, **block_kwargs):
         super().__init__()
@@ -145,14 +154,13 @@ class DiTBlock(nn.Module):
 
         return x
 
-
-#################################################################################
-#                                 Final Layer                                   #
-#################################################################################
+#############################################
+# ----- Final Layer -----
+#############################################
 
 class FinalLayer(nn.Module):
     """
-    The final layer of DiT.
+    The final layer of ConditionTransformer.
     """
     def __init__(self, hidden_size, nodes_size, time_embedding_size=256):
         super().__init__()
@@ -174,12 +182,11 @@ class FinalLayer(nn.Module):
         x = x.flatten(1) @ self.embedding_params
         return x.squeeze(-1)
 
+#############################################
+# ----- ConditionTransformer Model -----
+#############################################
 
-#################################################################################
-#                                   DiT Model                                   #
-#################################################################################
-
-class DiT(nn.Module):
+class ConditionTransformer(nn.Module):
     """
     Diffusion model with a Transformer backbone.
     """
@@ -201,7 +208,7 @@ class DiT(nn.Module):
         self.t_embedder = TimestepEmbedder(nodes_size, hidden_size, mlp_ratio=mlp_ratio, frequency_embedding_size=time_embedding_size)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, nodes_size, mlp_ratio=mlp_ratio) for _ in range(depth)
+            TransformerBlock(hidden_size, num_heads, nodes_size, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, nodes_size)                   
         self.initialize_weights()
@@ -219,7 +226,7 @@ class DiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
-        # Zero-out adaLN modulation layers in DiT blocks:
+        # Zero-out adaLN modulation layers in ConditionTransformer blocks:
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
@@ -232,7 +239,7 @@ class DiT(nn.Module):
     
     def forward(self, x, t, c):
         """
-        Forward pass of DiT.
+        Forward pass of ConditionTransformer.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         c: (N,) tensor of data conditions (latent or conditioned)

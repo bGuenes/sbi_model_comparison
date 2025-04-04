@@ -7,11 +7,9 @@ import torch.multiprocessing as mp
 
 import schedulefree
 
-import numpy as np
 import tqdm
 import datetime
 import time
-import copy
 
 class TensorTupleDataset(Dataset):
     def __init__(self, tensor1, tensor2):
@@ -35,18 +33,18 @@ class TensorTupleDataset(Dataset):
 # ////////////////////////////////////////// Training //////////////////////////////////////////
 #################################################################################################
 class Trainer():
-    def __init__(self, MTf):
-        self.MTf = MTf
-        #self.model_copy = copy.deepcopy(self.MTf.model)
+    def __init__(self, SBIm):
+        self.SBIm = SBIm
+        #self.model_copy = copy.deepcopy(self.SBIm.model)
         # Get SDE from model for calculations
-        self.sde = self.MTf.sde
+        self.sde = self.SBIm.sde
 
     #############################################
     # ----- Training loop -----
     #############################################
     def train(self, world_size, train_data, condition_mask_data=None, val_data=None, condition_mask_val=None, 
               max_epochs=500, early_stopping_patience=20, batch_size=128, lr=1e-3,
-              path=None, device="cpu", verbose=True):
+              path=None, name="Model", device="cpu", verbose=True):
         
         """
         Training function for the score prediction task
@@ -63,6 +61,7 @@ class Trainer():
             batch_size: Batch size
             lr: Learning rate
             path: Path to save the model
+            name: Name of the model
             device: Device to use
             verbose: Verbosity
         """
@@ -81,6 +80,8 @@ class Trainer():
         self.batch_size = batch_size
         self.lr = lr
         self.path = path
+        self.name = name
+        self.name_checkpoint = f"{self.name}_checkpoint"
         self.verbose = verbose
         self.eps = 1e-3 # Epsilon for numerical stability and endpoint in diffusion process
 
@@ -102,7 +103,7 @@ class Trainer():
         if self.world_size > 1:
             self._ddp_setup(rank, self.world_size)
         else:
-            self.model = self.MTf.model.to(self.device)
+            self.model = self.SBIm.model.to(self.device)
 
         self.verbose = self.verbose if rank == 0 else False
 
@@ -144,7 +145,7 @@ class Trainer():
                 best_val_loss = train_loss_all
                 patience_counter = 0
                 if rank == 0:
-                    self._save_checkpoint()
+                    self._save_checkpoint(name=self.name_checkpoint)
             elif val_data is None and train_loss_all >= best_val_loss:
                 patience_counter += 1
 
@@ -171,7 +172,7 @@ class Trainer():
                     best_val_loss = val_loss_all
                     patience_counter = 0
                     if rank == 0:
-                        self._save_checkpoint()
+                        self._save_checkpoint(name=self.name_checkpoint)
                 elif val_loss_all >= best_val_loss:
                     patience_counter += 1
 
@@ -193,7 +194,7 @@ class Trainer():
         if self.world_size > 1:
             dist.barrier()
             if rank == 0:
-                self._save_checkpoint(name="Model")
+                self._save_checkpoint(name=self.name)
             dist.destroy_process_group()
         
     def _run_epoch(self, epoch, data_loader, optimizer, is_train):
@@ -238,7 +239,7 @@ class Trainer():
         # Sample x_1 from noise distribution
         x_1 = torch.randn_like(data)*(1-condition_mask) + data*condition_mask
         # Calculate x at time t in diffusion process
-        x_t = self.MTf.forward_diffusion_sample(data, timesteps, x_1, condition_mask)
+        x_t = self.SBIm.forward_diffusion_sample(data, timesteps, x_1, condition_mask)
         # Get score
         score = self._get_score(x_t, timesteps, condition_mask)
         # Calculate loss
@@ -286,8 +287,8 @@ class Trainer():
         )
 
         self.device = torch.device(f'cuda:{rank}')
-        self.MTf.model.to(self.device)
-        self.model = DDP(self.MTf.model, device_ids=[rank], output_device=rank)
+        self.SBIm.model.to(self.device)
+        self.model = DDP(self.SBIm.model, device_ids=[rank], output_device=rank)
 
     #############################################
     # ----- Standard Functions -----
@@ -297,7 +298,7 @@ class Trainer():
         """Get score estimate from model"""
         # Get conditional score
         out = self.model(x=x, t=t, c=condition_mask)
-        score = self.MTf.output_scale_function(t, out)
+        score = self.SBIm.output_scale_function(t, out)
                 
         return score
 
@@ -335,14 +336,14 @@ class Trainer():
             # Save torch model in case of multi-GPU training
             state_dict = {
                 'model_state_dict' : self.model.module.state_dict(),
-                'nodes_size': self.MTf.nodes_size,
-                'sde_type': self.MTf.sde_type,
-                'sigma': self.MTf.sigma,
-                'hidden_size': self.MTf.hidden_size,
-                'depth': self.MTf.depth,
-                'num_heads': self.MTf.num_heads,
-                'mlp_ratio': self.MTf.mlp_ratio
+                'nodes_size': self.SBIm.nodes_size,
+                'sde_type': self.SBIm.sde_type,
+                'sigma': self.SBIm.sigma,
+                'hidden_size': self.SBIm.hidden_size,
+                'depth': self.SBIm.depth,
+                'num_heads': self.SBIm.num_heads,
+                'mlp_ratio': self.SBIm.mlp_ratio
             }
             torch.save(state_dict, f"{self.path}/{name}.pt")
         else:
-            self.MTf.save(f"{self.path}/{name}.pt")
+            self.SBIm.save(f"{self.path}/{name}.pt")
