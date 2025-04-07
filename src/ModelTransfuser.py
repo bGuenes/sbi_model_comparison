@@ -226,20 +226,20 @@ class ModelTransfuser():
             posterior_samples = posterior_samples[:,:,(1-condition_mask).bool()].cpu().numpy()
 
             # MAP estimation
-            theta_hat = torch.tensor([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
-            MAP_posterior, std_MAP_posterior = theta_hat[:,0], theta_hat[:,1]
+            theta_hat = np.array([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
+            MAP_posterior, std_MAP_posterior = torch.tensor(theta_hat[:,0]), torch.tensor(theta_hat[:,1])
 
             # Storing MAP and std MAP
             self.stats[model_name]["MAP"] = theta_hat
 
             ####################
             # Null Hypothesis
-            null_samples = model.sample(data=torch.zeros(model.nodes_size), condition_mask=condition_mask, timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+            null_samples = model.sample(data=torch.zeros(model.nodes_size), condition_mask=torch.zeros(model.nodes_size), timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
             null_samples = null_samples.cpu().numpy()
-            null_samples = null_samples[:,:,condition_mask.bool()]
+            null_samples = null_samples[0,:,condition_mask.bool()]
 
             # Log probability of null hypothesis
             null_log_probs = torch.tensor([self._log_prob(null_samples, observations[i]) for i in range(len(observations))])
@@ -296,7 +296,7 @@ class ModelTransfuser():
         log_prob = kde.logpdf(observation).item()
         return log_prob
 
-    def _map_kde(samples):
+    def _map_kde(self, samples):
         """Find the joint mode of the multivariate distribution"""
         kde = gaussian_kde(samples.T)  # KDE expects (n_dims, n_samples)
         

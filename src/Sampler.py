@@ -145,6 +145,8 @@ class Sampler():
         if self.world_size > 1:
             dist.barrier()
             self._gather_samples(all_samples, indices, result_dict)
+            dist.barrier()
+            dist.destroy_process_group()
 
         else:
             samples = torch.cat(all_samples, dim=0)
@@ -191,8 +193,8 @@ class Sampler():
             # Sort results by index
             gathered_idx = torch.cat(gathered_idx, dim=0)
             gathered_samples = torch.cat(gathered_samples, dim=0)
-            _, sort_idx = gathered_idx.sort()
-            samples = gathered_samples[sort_idx]
+            unique_sort_idx = [(gathered_idx == i).nonzero()[0,0].tolist() for i in gathered_idx.unique()]
+            samples = gathered_samples[unique_sort_idx]
 
             result_dict['samples'] = samples.cpu()
         
@@ -241,14 +243,17 @@ class Sampler():
             sampler = DistributedSampler(
                 dataset_cond, 
                 num_replicas=self.world_size, 
-                rank=self.rank
+                rank=self.rank,
+                shuffle=False,
+                drop_last=False,
             )
             data_loader = DataLoader(
                 dataset_cond, 
                 batch_size=int(batch_size), 
                 sampler=sampler, 
                 pin_memory=True,
-                shuffle=False
+                shuffle=False,
+                drop_last=False
             )
         else:
             data_loader = DataLoader(dataset_cond, batch_size=int(batch_size), shuffle=False)

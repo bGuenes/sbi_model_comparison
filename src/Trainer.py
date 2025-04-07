@@ -224,8 +224,6 @@ class Trainer():
                 loss.backward()
                 if self.world_size > 1: dist.barrier()
                 optimizer.step()
-                
-        torch.cuda.empty_cache()
 
         return total_loss / batch_count
 
