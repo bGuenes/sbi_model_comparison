@@ -321,4 +321,13 @@ A table by [Kass and Raftery (1995)](https://www.tandfonline.com/doi/abs/10.1080
 | 10 - 100         | Strong                             |
 | > 100            | Decisive                           |
 
+---
+---
+## Results
 
+| Violin Plot of Observation Probabilties | Model Probability after N Observations |
+|:---:|:---:|
+| ![](plots/Readme/model_probs_violin.png) | ![](plots/Readme/model_probs_updated.png) |
+
+The plots show us the probabilities of the models fitting the data. <br>
+The violin plot shows the distribution of the probabilities of each model fitting the data and the line plot shows the combined belief of the model fitting the observations.

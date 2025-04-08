@@ -383,7 +383,7 @@ class ModelTransfuser():
         model_log_probs = torch.stack([self.stats[model]["log_probs"] for model in model_names])
         model_obs_probs = torch.stack([self.stats[model]["obs_probs"] for model in model_names])
 
-        sns.set_context("notebook")
+        sns.set_context("paper")
 
         # Plot violin plot of model probabilities
         plt.figure(figsize=(10, 5))
@@ -400,9 +400,11 @@ class ModelTransfuser():
 
         # Plot updated model probabilities
         plt.figure(figsize=(10, 5))
-        plt.plot(torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T, label=model_names, marker='o', markersize=5, linewidth=1)
+        plt.plot(torch.arange(1, model_log_probs.shape[1]+1).repeat(len(model_names),1).T,
+                    torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T,
+                    label=model_names, marker='o', markersize=3, linewidth=1)
         plt.legend()
-        plt.xticks(ticks=range(len(model_log_probs[0])), labels=1+np.array(range(len(model_log_probs[0]))))
+        plt.xscale("log")
         plt.title("Updated Model Probabilities")
         plt.xlabel("Number of observations")
         plt.ylabel("Model Probability")
