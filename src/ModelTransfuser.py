@@ -1,5 +1,6 @@
 import os
 import sys
+import pickle
 
 import torch
 import torch.nn as nn
@@ -20,7 +21,14 @@ from src.ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
 #################################################################################################
 
 class ModelTransfuser():
-    def __init__(self):
+    def __init__(self, path=None):
+        
+        ## Check if the path exists
+        if path is not None:
+            if not os.path.exists(path):
+                os.makedirs(path)
+        self.path = path
+        
         self.models_dict = {}
         self.data_dict = {}
         self.trained_models = False # Flag to check if models are trained
@@ -129,6 +137,7 @@ class ModelTransfuser():
     #############################################
     # ----- Train Models -----
     #############################################
+
     def train_models(self, condition_mask_data=None, condition_mask_val=None, 
                 batch_size=128, max_epochs=500, lr=1e-3, device="cuda",
                 verbose=False, path=None, early_stopping_patience=20): 
@@ -156,6 +165,11 @@ class ModelTransfuser():
         if self.trained_models:
             print("Continue training existing models.")
 
+        if path is not None:
+            self.path = path
+        elif self.path is not None:
+            path = self.path
+
         for model_name in self.models_dict.keys():
             model = self.models_dict[model_name]
             data = self.data_dict[model_name]["train_data"]
@@ -169,6 +183,7 @@ class ModelTransfuser():
             load_path = f"{path}/{model_name}.pt"
             self.models_dict[model_name] = SBIm.load(path=load_path, device="cpu")
             print(f"Model {model_name} trained")
+            torch.cuda.empty_cache()
 
         self.trained_models = True
 
@@ -213,7 +228,7 @@ class ModelTransfuser():
         
         self.stats = {}
         self.model_null_log_probs = {}
-    
+        self.softmax = nn.Softmax(dim=0)
         
         for model_name, model in self.models_dict.items():
             self.stats[model_name] = {}
@@ -227,7 +242,7 @@ class ModelTransfuser():
 
             # MAP estimation
             theta_hat = np.array([self._map_kde(posterior_samples[i]) for i in range(len(posterior_samples))])
-            MAP_posterior, std_MAP_posterior = torch.tensor(theta_hat[:,0]), torch.tensor(theta_hat[:,1])
+            MAP_posterior, std_MAP_posterior = torch.tensor(theta_hat[:,0], dtype=torch.float), torch.tensor(theta_hat[:,1], dtype=torch.float)
 
             # Storing MAP and std MAP
             self.stats[model_name]["MAP"] = theta_hat
@@ -238,11 +253,10 @@ class ModelTransfuser():
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
-            null_samples = null_samples.cpu().numpy()
-            null_samples = null_samples[0,:,condition_mask.bool()]
+            null_samples = null_samples[0,:,condition_mask.bool()].cpu().numpy()
 
             # Log probability of null hypothesis
-            null_log_probs = torch.tensor([self._log_prob(null_samples, observations[i]) for i in range(len(observations))])
+            null_log_probs = torch.tensor([self._log_prob(null_samples, obs) for obs in observations])
             self.stats[model_name]["log_probs_nullHyp"] = null_log_probs
 
             ####################
@@ -259,15 +273,20 @@ class ModelTransfuser():
             self.stats[model_name]["AIC"] = log_probs.sum() 
 
             # Null Hypothesis test
-            self.stats[model_name]["Bayes_Factor_Null_Hyp"] = log_probs - null_log_probs
+            self.stats[model_name]["Bayes_Factor_Null_Hyp"] = log_probs.sum() - null_log_probs.sum()
 
         # Calculate Model Probabilitys from AICs
         aics = [self.stats[model_name]["AIC"] for model_name in self.stats.keys()]
         aics = torch.tensor(aics)
-        model_probs = nn.Softmax(aics)
+        model_probs = self.softmax(aics)
 
-        for model_name in self.stats.keys():
-            self.stats[model_name]["model_prob"] = model_probs
+        # Calculate Probability of each observation
+        log_probs = torch.stack([self.stats[model_name]["log_probs"] for model_name in self.stats.keys()])
+        probs = self.softmax(log_probs)
+
+        for i, model_name in enumerate(self.stats.keys()):
+            self.stats[model_name]["model_prob"] = model_probs[i].item()
+            self.stats[model_name]["obs_probs"] = probs[i]
 
         model_names = list(self.stats.keys())
         best_model = model_names[model_probs.argmax()]
@@ -278,13 +297,18 @@ class ModelTransfuser():
         hypothesis_test = "could" if best_bayes_factor > 0 else "could not"
         hypothesis_test_strength = self._bayes_factor_strength(best_bayes_factor)
 
-        print("Probabilities of the models:")
-        for i in range(len(model_names)):
-            print(f"{model_names[i]}: {100*self.stats[model_names[i]]['model_prob']:.3f} %")
+        model_print_length = len(max(model_names, key=len))
+        print(f"Probabilities of the models after {len(observations)} observations:")
+        for model in model_names:
+            print(f"{model.ljust(model_print_length)}: {100*self.stats[model]['model_prob']:6.2f} %")
         print()
         print(f"Model {best_model} fits the data best " + 
-      f"with a relative support of {best_model_prob:.1f}% among the considered models "+
-      f"and {hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
+                f"with a relative support of {best_model_prob:.1f}% among the considered models "+
+                f"and {hypothesis_test} reject the null hypothesis{hypothesis_test_strength}.")
+        
+        if self.path is not None:
+            with open(f"{self.path}/model_comp.pkl", "wb") as f:
+                pickle.dump(self.stats, f)
 
     #############################################
     # ----- Kernel Density Estimation -----
@@ -323,7 +347,7 @@ class ModelTransfuser():
         Returns:
             The strength of the Bayes factor as a string.
         """
-        hypothesis_test_strength = np.exp(BF)
+        hypothesis_test_strength = torch.exp(BF)
 
         if 1 < hypothesis_test_strength <= 3.2:
             hypothesis_test_strength = " barley"
@@ -338,3 +362,53 @@ class ModelTransfuser():
 
         return hypothesis_test_strength
     
+    ##############################################
+    # ----- Plotting -----
+    ##############################################
+
+    def plots(self, stats_dict=None, path=None, show=True):
+
+        # Check path
+        if path is None:
+            path = self.path
+            if not os.path.exists(path):
+                os.makedirs(path)
+
+        # Check stats_dict
+        if stats_dict is None:
+            stats_dict = self.stats
+
+        model_names = list(self.stats.keys())
+        model_probs = torch.tensor([self.stats[model]["model_prob"] for model in model_names])
+        model_log_probs = torch.stack([self.stats[model]["log_probs"] for model in model_names])
+        model_obs_probs = torch.stack([self.stats[model]["obs_probs"] for model in model_names])
+
+        sns.set_context("notebook")
+
+        # Plot violin plot of model probabilities
+        plt.figure(figsize=(10, 5))
+        sns.violinplot(data=model_obs_probs.T)
+        plt.xticks(ticks=range(len(model_names)), labels=model_names)
+        plt.title("Model Probabilities")
+        plt.xlabel("Model")
+        plt.ylabel("Probability of Observations")
+        if path is not None:
+            plt.savefig(f"{path}/model_probs_violin.png")
+        if show:
+            plt.show()
+        plt.close()
+
+        # Plot updated model probabilities
+        plt.figure(figsize=(10, 5))
+        plt.plot(torch.nn.functional.softmax(model_log_probs.cumsum(1),0).T, label=model_names, marker='o', markersize=5, linewidth=1)
+        plt.legend()
+        plt.xticks(ticks=range(len(model_log_probs[0])), labels=1+np.array(range(len(model_log_probs[0]))))
+        plt.title("Updated Model Probabilities")
+        plt.xlabel("Number of observations")
+        plt.ylabel("Model Probability")
+        plt.grid(True)
+        if path is not None:
+            plt.savefig(f"{path}/model_probs_updated.png")
+        if show:
+            plt.show()
+        plt.close()

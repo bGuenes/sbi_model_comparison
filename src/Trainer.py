@@ -344,4 +344,4 @@ class Trainer():
             }
             torch.save(state_dict, f"{self.path}/{name}.pt")
         else:
-            self.SBIm.save(f"{self.path}/{name}.pt")
+            self.SBIm.save(path=self.path ,name=name)
