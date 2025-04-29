@@ -1,5 +1,6 @@
 data/Chempy_data/*
 data/Chempy_model_comp_data/*
+data/big_MTf*
 data/models/*
 data/model_comp*
 Chempy/
