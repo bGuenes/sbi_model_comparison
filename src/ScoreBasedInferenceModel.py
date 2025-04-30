@@ -124,7 +124,7 @@ class ScoreBasedInferenceModel(nn.Module):
     # ----- Sample -----
     #############################################
         
-    def sample(self, theta=None, x=None, err=None,
+    def sample(self, theta=None, x=None, err=None, condition_mask=None,
                timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False):
@@ -160,11 +160,13 @@ class ScoreBasedInferenceModel(nn.Module):
         if theta is None and x is not None:
             # If only x is provided, use it as the data
             data = x
-            condition_mask = torch.cat([torch.zeros(self.nodes_size-data.shape[-1]),torch.ones(data.shape[-1])])
+            if condition_mask is None:
+                condition_mask = torch.cat([torch.zeros(self.nodes_size-data.shape[-1]),torch.ones(data.shape[-1])])
         if x is None and theta is not None:
             # If only theta is provided, use it as the data
             data = theta
-            condition_mask = torch.cat([torch.ones(data.shape[-1]),torch.zeros(self.nodes_size-data.shape[-1])])
+            if condition_mask is None:
+                condition_mask = torch.cat([torch.ones(data.shape[-1]),torch.zeros(self.nodes_size-data.shape[-1])])
         if theta is not None and x is not None:
             # Both theta and x are provided, raise an error
             raise ValueError("Both theta and x are provided!\nPlease provide theta to sample from the Likelihood OR x to sample from the Posterior.")

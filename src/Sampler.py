@@ -40,7 +40,8 @@ class Sampler():
     # ----- Main Sampling Loop -----
     #############################################
     
-    def sample(self, world_size, data, err=None,condition_mask=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None,
+    def sample(self, world_size, data, err=None, condition_mask=None, 
+               timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cpu", verbose=True, method="dpm", save_trajectory=False, result_dict=None):
         """

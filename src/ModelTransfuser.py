@@ -190,7 +190,8 @@ class ModelTransfuser():
     # ----- Model Comparison -----
     #############################################
 
-    def compare(self, x, err=None, timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
+    def compare(self, x, err=None, condition_mask=None,
+               timesteps=50, eps=1e-3, num_samples=1000, cfg_alpha=None, multi_obs_inference=False, hierarchy=None,
                order=2, snr=0.1, corrector_steps_interval=5, corrector_steps=5, final_corrector_steps=3,
                device="cuda", verbose=False, method="dpm"):
         """
@@ -227,10 +228,12 @@ class ModelTransfuser():
         
         for model_name, model in self.models_dict.items():
             self.stats[model_name] = {}
-            condition_mask = torch.cat([torch.zeros(model.nodes_size-x.shape[1]),torch.ones(x.shape[1])])
+            if condition_mask is None:
+                condition_mask = torch.cat([torch.zeros(model.nodes_size-x.shape[-1]),torch.ones(x.shape[-1])])
             ####################
             # Posterior sampling
-            posterior_samples = model.sample(x=x, err=err, timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+            posterior_samples = model.sample(x=x, err=err, condition_mask=condition_mask,
+                                            timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)
@@ -257,7 +260,8 @@ class ModelTransfuser():
 
             ####################
             # Likelihood sampling
-            likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior,timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
+            likelihood_samples = model.sample(theta=MAP_posterior, err=std_MAP_posterior, condition_mask=condition_mask,
+                                            timesteps=timesteps, eps=eps, num_samples=num_samples, cfg_alpha=cfg_alpha,
                                             multi_obs_inference=multi_obs_inference, hierarchy=hierarchy,
                                             order=order, snr=snr, corrector_steps_interval=corrector_steps_interval, corrector_steps=corrector_steps, final_corrector_steps=final_corrector_steps,
                                             device=device, verbose=verbose, method=method)

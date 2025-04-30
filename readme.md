@@ -1,4 +1,5 @@
 # Simulation-Based Bayesian Model Comparison
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15183600.svg)](https://doi.org/10.5281/zenodo.15183600)
 
 This repo explores a novel approach to Simulation-Based Inference (SBI) and Bayesian Model Comparisan by leveraging a [**score-based diffusion model**](https://arxiv.org/abs/2011.13456) combined with a [**transformer architecture**](https://arxiv.org/abs/1706.03762) [[Peebles et al.](https://arxiv.org/abs/2212.09748), [Gloecker et al.](https://arxiv.org/abs/2404.09636)]. <br>
 The model utilizes an **attention mask** to conditionally predict both the **posterior distribution** and the **likelihood** of the data. <br>
