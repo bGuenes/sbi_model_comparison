@@ -6,7 +6,7 @@ import numpy as np
 import os
 import time
 
-if __name__ == "main":
+if __name__ == "__main__":
     start = time.time()
 
     MTf = ModelTransfuser(path="data/big_MTf_model_comp/")
@@ -30,15 +30,17 @@ if __name__ == "main":
     data_std = np.delete(data_std, 4, axis=0)
 
     # Convert to torch tensors
-    data = torch.tensor(data)
-    data_std = torch.tensor(data_std)
+    data = torch.tensor(data, dtype=torch.float32)
+    data_std = torch.tensor(data_std, dtype=torch.float32)
 
     # Nissen GCE provides Age, C, Fe, Mg, O and Si
     # The models are trained on more elements, so we need to provide a mask to tell the model which data is available
-    condition_mask = torch.tensor([0,0,0,0,0,1,1,1,0,1,0,0,1,1])
+    condition_mask = torch.tensor([0,0,0,0,0,1,1,1,0,1,0,0,1,1], dtype=torch.float32)
 
     # ------------------------------------------
     # Run the comparison
+    print()
+    print("Running comparison...")
     MTf.compare(x=data, err=data_std, condition_mask=condition_mask, device="cuda")
     MTf.plots()
 
