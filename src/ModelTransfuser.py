@@ -378,10 +378,10 @@ class ModelTransfuser():
         if stats_dict is None:
             stats_dict = self.stats
 
-        model_names = list(self.stats.keys())
-        model_probs = torch.tensor([self.stats[model]["model_prob"] for model in model_names])
-        model_log_probs = torch.stack([self.stats[model]["log_probs"] for model in model_names])
-        model_obs_probs = torch.stack([self.stats[model]["obs_probs"] for model in model_names])
+        model_names = list(stats_dict.keys())
+        model_probs = torch.tensor([stats_dict[model]["model_prob"] for model in model_names])
+        model_log_probs = torch.stack([stats_dict[model]["log_probs"] for model in model_names])
+        model_obs_probs = torch.stack([stats_dict[model]["obs_probs"] for model in model_names])
 
         sns.set_context("paper")
 
