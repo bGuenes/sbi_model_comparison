@@ -6,7 +6,7 @@ import argparse
 
 import torch
 
-from src.ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
+from compass import ScoreBasedInferenceModel as SBIm
 
 import tarp
 import optuna
@@ -96,17 +96,17 @@ def objective(trial):
 
         # Setup model
         nodes_size = train_data.shape[1]
-        model = SBIm(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
+        sbim = SBIm(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
         # Train model
-        model.train(train_data, val_data=val_data, batch_size=batch_size, max_epochs=500, device="cuda", verbose=True, early_stopping_patience=20)
+        sbim.train(train_data, val_data=val_data, batch_size=batch_size, max_epochs=500, device="cuda", verbose=True, early_stopping_patience=20)
 
         # Evaluate model
         mask = torch.zeros_like(val_data[0])
         mask[6:] = 1
         val_theta, val_x = val_data[:1000, :6], val_data[:1000, 6:]
 
-        samples = model.sample(val_x, condition_mask=mask, verbose=True, num_samples=1000, timesteps=100, device="cuda")
+        samples = sbim.sample(val_x, condition_mask=mask, verbose=True, num_samples=1000, timesteps=100, device="cuda")
         
         theta_hat = samples[:,:,:6].contiguous().cpu().numpy()
         val_theta = val_theta.cpu().numpy()

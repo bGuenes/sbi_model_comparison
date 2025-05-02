@@ -6,7 +6,7 @@ import argparse
 
 import torch
 
-from src.ScoreBasedInferenceModel import ScoreBasedInferenceModel as SBIm
+from compass import ScoreBasedInferenceModel as SBIm
 
 def load_data():
     # -------------------------------------
@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     # Setup model
     nodes_size = train_data.shape[1]
-    model = SBIm(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
+    sbim = SBIm(nodes_size=nodes_size, sigma=sigma, depth=depth, hidden_size=hidden_size, num_heads=num_heads, mlp_ratio=mlp_ratio)
 
     # Train model
-    model.train(train_data, val_data=val_data, batch_size=batch_size, max_epochs=500, device="cuda", verbose=True, early_stopping_patience=20, path=path)
+    sbim.train(train_data, val_data=val_data, batch_size=batch_size, max_epochs=500, device="cuda", verbose=True, early_stopping_patience=20, path=path)

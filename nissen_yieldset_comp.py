@@ -1,3 +1,6 @@
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,4,5,6,9'
+
 from compass import ModelTransfuser
 from compass import ScoreBasedInferenceModel as SBIm
 
@@ -9,7 +12,7 @@ import time
 if __name__ == "__main__":
     start = time.time()
 
-    MTf = ModelTransfuser(path="data/big_MTf_model_comp/")
+    MTf = ModelTransfuser(path="data/Nissen_model_comp/")
 
     # -----------------------------------------
     # Load in the models
@@ -41,7 +44,7 @@ if __name__ == "__main__":
     # Run the comparison
     print()
     print("Running comparison...")
-    MTf.compare(x=data, err=data_std, condition_mask=condition_mask, device="cuda")
+    MTf.compare(x=data, err=data_std, condition_mask=condition_mask, device="cuda", timesteps=500, final_corrector_steps=10)
     MTf.plots()
 
     # ------------------------------------------
